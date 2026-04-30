@@ -38,3 +38,23 @@ def test_atm_call_delta_near_half():
     # ATM call delta ≈ 0.5 at r=0
     d = delta(100.0, 100.0, 1.0, 0.0, 0.2, "call")
     assert abs(d - 0.5) < 0.05
+
+
+# Task 3: Finite-Difference Greeks tests
+from src.greeks.numerical import delta_fd, gamma_fd, vega_fd, theta_fd
+
+def test_fd_delta_matches_analytical():
+    S, K, T, r, sigma = 100.0, 100.0, 1.0, 0.05, 0.2
+    assert abs(delta_fd(S, K, T, r, sigma, "call") - delta(S, K, T, r, sigma, "call")) < 1e-4
+
+def test_fd_gamma_matches_analytical():
+    S, K, T, r, sigma = 100.0, 100.0, 1.0, 0.05, 0.2
+    assert abs(gamma_fd(S, K, T, r, sigma) - gamma(S, K, T, r, sigma)) < 1e-4
+
+def test_fd_vega_matches_analytical():
+    S, K, T, r, sigma = 100.0, 100.0, 1.0, 0.05, 0.2
+    assert abs(vega_fd(S, K, T, r, sigma) - vega(S, K, T, r, sigma)) < 1e-3
+
+def test_fd_theta_matches_analytical():
+    S, K, T, r, sigma = 100.0, 100.0, 1.0, 0.05, 0.2
+    assert abs(theta_fd(S, K, T, r, sigma, "call") - theta(S, K, T, r, sigma, "call")) < 5e-3
