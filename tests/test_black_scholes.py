@@ -25,3 +25,19 @@ def test_expired_call():
 def test_invalid_option_type():
     with pytest.raises(ValueError):
         bs_price(100.0, 100.0, 1.0, 0.05, 0.2, "future")
+
+from src.pricing.binomial import binomial_price
+
+def test_binomial_converges_to_bs():
+    from src.pricing.black_scholes import bs_price
+    S, K, T, r, sigma = 100.0, 100.0, 1.0, 0.05, 0.2
+    bs = bs_price(S, K, T, r, sigma, "call")
+    bt = binomial_price(S, K, T, r, sigma, "call", n_steps=500)
+    assert abs(bt - bs) < 0.05  # within 5 cents at 500 steps
+
+def test_binomial_put_call_parity():
+    S, K, T, r, sigma = 100.0, 100.0, 1.0, 0.05, 0.2
+    call = binomial_price(S, K, T, r, sigma, "call", n_steps=200)
+    put  = binomial_price(S, K, T, r, sigma, "put",  n_steps=200)
+    import numpy as np
+    assert abs((call - put) - (S - K * np.exp(-r * T))) < 0.1
