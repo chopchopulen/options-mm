@@ -58,3 +58,28 @@ def test_fd_vega_matches_analytical():
 def test_fd_theta_matches_analytical():
     S, K, T, r, sigma = 100.0, 100.0, 1.0, 0.05, 0.2
     assert abs(theta_fd(S, K, T, r, sigma, "call") - theta(S, K, T, r, sigma, "call")) < 5e-3
+
+
+# Task 4: Portfolio Greeks Aggregator tests
+from src.greeks.portfolio import portfolio_greeks
+
+def test_portfolio_greeks_two_positions():
+    positions = [
+        {"S": 100.0, "K": 100.0, "T": 1.0, "r": 0.05, "sigma": 0.2, "option_type": "call", "quantity": 10},
+        {"S": 100.0, "K": 105.0, "T": 1.0, "r": 0.05, "sigma": 0.2, "option_type": "put",  "quantity": -5},
+    ]
+    g = portfolio_greeks(positions, contract_size=100)
+    assert "delta" in g and "gamma" in g and "vega" in g and "theta" in g
+
+def test_portfolio_delta_is_sum():
+    from src.greeks.analytical import delta as adelta
+    positions = [
+        {"S": 100.0, "K": 100.0, "T": 1.0, "r": 0.05, "sigma": 0.2, "option_type": "call", "quantity": 10},
+    ]
+    g = portfolio_greeks(positions, contract_size=100)
+    expected = adelta(100.0, 100.0, 1.0, 0.05, 0.2, "call") * 10 * 100
+    assert abs(g["delta"] - expected) < 1e-8
+
+def test_portfolio_empty():
+    g = portfolio_greeks([], contract_size=100)
+    assert g["delta"] == 0.0 and g["gamma"] == 0.0
