@@ -41,3 +41,28 @@ def test_binomial_put_call_parity():
     put  = binomial_price(S, K, T, r, sigma, "put",  n_steps=200)
     import numpy as np
     assert abs((call - put) - (S - K * np.exp(-r * T))) < 0.1
+
+from src.pricing.monte_carlo import mc_price
+
+def test_mc_call_within_tolerance():
+    from src.pricing.black_scholes import bs_price
+    import numpy as np
+    rng = np.random.default_rng(42)
+    S, K, T, r, sigma = 100.0, 100.0, 1.0, 0.05, 0.2
+    bs = bs_price(S, K, T, r, sigma, "call")
+    mc = mc_price(S, K, T, r, sigma, "call", n_paths=50_000, rng=rng)
+    assert abs(mc - bs) < 0.10  # within 10 cents
+
+def test_mc_antithetic_reduces_variance():
+    import numpy as np
+    S, K, T, r, sigma = 100.0, 100.0, 1.0, 0.0, 0.2
+    errors_naive     = []
+    errors_antithetic = []
+    from src.pricing.black_scholes import bs_price
+    bs = bs_price(S, K, T, r, sigma, "call")
+    for seed in range(20):
+        rng = np.random.default_rng(seed)
+        errors_naive.append(abs(mc_price(S, K, T, r, sigma, "call", 5_000, rng, antithetic=False) - bs))
+        rng = np.random.default_rng(seed)
+        errors_antithetic.append(abs(mc_price(S, K, T, r, sigma, "call", 5_000, rng, antithetic=True) - bs))
+    assert np.mean(errors_antithetic) < np.mean(errors_naive)
