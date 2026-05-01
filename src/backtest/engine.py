@@ -16,6 +16,31 @@ class BacktestEngine:
         self.cfg  = cfg
         self.seed = seed
 
+    @staticmethod
+    def _book_value(options, inventory, S, sigma, r, day, spd, contract_size):
+        """Compute mark-to-market value of all option positions.
+
+        Positions are stored in inventory keyed by (K, T_at_trade_time, option_type).
+        We aggregate net quantity per (K, option_type) across all stored T keys,
+        then price using current remaining time = (T_days/252) - (day/252).
+        """
+        # Aggregate net quantity per (K, option_type) across all stored expiry keys
+        net_qty = {}
+        for (K, T_stored, otype), pos in inventory.get_all_positions().items():
+            if pos["quantity"] != 0:
+                key = (K, otype)
+                net_qty[key] = net_qty.get(key, 0) + pos["quantity"]
+
+        total = 0.0
+        for o in options:
+            key = (o["K"], o["option_type"])
+            qty = net_qty.get(key, 0)
+            if qty != 0:
+                T_o = max(0.0001, (o["T_days"] / 252) - (day / 252))
+                price = bs_price(S, o["K"], T_o, r, sigma, o["option_type"])
+                total += qty * price * contract_size
+        return total
+
     def _build_option_universe(self, S0: float):
         opts = []
         for (offset, exp_days, otype) in self.cfg.OPTION_UNIVERSE:
@@ -58,6 +83,12 @@ class BacktestEngine:
             day_spread_fills = []
             day_hedge_costs  = []
             sigma_sod        = sigma_implied  # start-of-day IV for delta_sigma
+
+            # Start-of-day snapshots for mark-to-market P&L
+            S_sod = prices[day * spd]
+            sod_book = self._book_value(options, inventory, S_sod, sigma_implied, r, day, spd, contract_size)
+            realized_pnl_sod = inventory.realized_pnl
+            underlying_sod = inventory.underlying_position * S_sod
 
             for step in range(spd):
                 idx    = day * spd + step
@@ -156,10 +187,15 @@ class BacktestEngine:
             delta_sigma  = sigma_implied - sigma_sod
 
             S_eod = prices[(day + 1) * spd]
+            # Aggregate net quantities per (K, option_type) across all stored T keys
+            net_qty_eod = {}
+            for (K, T_stored, otype), pos in inventory.get_all_positions().items():
+                if pos["quantity"] != 0:
+                    net_qty_eod[(K, otype)] = net_qty_eod.get((K, otype), 0) + pos["quantity"]
             eod_pos = []
             for o in options:
                 T_o = max(0.0001, (o["T_days"] / 252) - ((day + 1) / 252))
-                qty = inventory.get_option_position(o["K"], T_o, o["option_type"])
+                qty = net_qty_eod.get((o["K"], o["option_type"]), 0)
                 eod_pos.append({
                     "S": S_eod, "K": o["K"], "T": T_o,
                     "r": r, "sigma": sigma_implied,
@@ -167,8 +203,12 @@ class BacktestEngine:
                 })
             port_eod = portfolio_greeks(eod_pos, contract_size)
 
-            mtm_pnl = (sum(f["spread_captured"] * f["size"] * f["contract_size"] for f in day_spread_fills)
-                       - sum(day_hedge_costs))
+            # Proper mark-to-market P&L: change in total portfolio value
+            eod_book = self._book_value(options, inventory, S_eod, sigma_implied, r, day + 1, spd, contract_size)
+            realized_pnl_delta = inventory.realized_pnl - realized_pnl_sod
+            underlying_eod = inventory.underlying_position * S_eod
+            underlying_pnl = underlying_eod - underlying_sod
+            mtm_pnl = (eod_book - sod_book) + realized_pnl_delta + underlying_pnl
 
             attr = attributor.compute(
                 spread_fills=day_spread_fills,
