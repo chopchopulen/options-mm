@@ -77,6 +77,11 @@ class BacktestEngine:
             realized_pnl_sod = inventory.realized_pnl
             underlying_sod = inventory.underlying_position * S_sod
 
+            # Initialize intraday attribution accumulators
+            daily_theta_pnl = 0.0
+            daily_gamma_pnl = 0.0
+            daily_vega_pnl  = 0.0
+
             for step in range(spd):
                 idx     = day * spd + step
                 S_true  = prices[idx + 1]
@@ -167,13 +172,14 @@ class BacktestEngine:
                 for ht in hedge_trades:
                     day_hedge_costs.append(ht["transaction_cost"])
 
-            # End of day
-            day_prices   = [prices[day * spd + i] for i in range(spd + 1)]
-            log_rets_day = np.diff(np.log(day_prices))
-            realized_var = float(np.var(log_rets_day) * TRADING_DAYS * spd)
-            implied_var  = sigma_implied ** 2
-            delta_sigma  = sigma_implied - sigma_sod
+                # Accumulate intraday theta and gamma P&L using current step's Greeks
+                step_dt = 1.0 / TRADING_DAYS / spd
+                step_realized_var = (log_ret ** 2) * TRADING_DAYS * spd  # annualized realized var this step
+                step_implied_var = sigma_implied ** 2
+                daily_theta_pnl += port_now["theta"] * step_dt
+                daily_gamma_pnl += 0.5 * port_now["gamma"] * S_true**2 * (step_realized_var - step_implied_var) * step_dt
 
+            # End of day
             S_eod = prices[(day + 1) * spd]
             eod_book = self._book_value(options, inventory, S_eod, sigma_implied, r, day + 1, contract_size)
             realized_pnl_delta = inventory.realized_pnl - realized_pnl_sod
@@ -181,6 +187,9 @@ class BacktestEngine:
             underlying_pnl = underlying_eod - underlying_sod
             mtm_pnl = (eod_book - sod_book) + realized_pnl_delta + underlying_pnl
 
+            # Vega P&L: use EOD portfolio greeks and net sigma change SOD→EOD
+            # MTM book reflects only the net sigma change, not intraday oscillations
+            delta_sigma = sigma_implied - sigma_sod
             eod_pos = []
             for o in options:
                 T_o = max(0.0001, (o["T_days"] / TRADING_DAYS) - ((day + 1) / TRADING_DAYS))
@@ -191,20 +200,25 @@ class BacktestEngine:
                     "option_type": o["option_type"], "quantity": qty,
                 })
             port_eod = portfolio_greeks(eod_pos, contract_size)
+            daily_vega_pnl = port_eod["vega"] * delta_sigma
 
-            attr = attributor.compute(
-                spread_fills=day_spread_fills,
-                portfolio_theta=port_eod["theta"],
-                portfolio_gamma=port_eod["gamma"],
-                portfolio_vega=port_eod["vega"],
-                S=S_eod,
-                realized_variance=realized_var,
-                implied_variance=implied_var,
-                delta_sigma_implied=delta_sigma,
-                hedge_costs=day_hedge_costs,
-                mtm_pnl=mtm_pnl,
-                dt=1.0 / TRADING_DAYS,
+            # Build attribution dict using intraday-accumulated Greek P&L components
+            spread_capture = sum(
+                f["spread_captured"] * f["size"] * f["contract_size"]
+                for f in day_spread_fills
             )
+            hedge_cost_total = -sum(day_hedge_costs)
+            residual = mtm_pnl - (spread_capture + daily_theta_pnl + daily_gamma_pnl + daily_vega_pnl + hedge_cost_total)
+
+            attr = {
+                "spread_capture": spread_capture,
+                "theta_pnl":      daily_theta_pnl,
+                "gamma_pnl":      daily_gamma_pnl,
+                "vega_pnl":       daily_vega_pnl,
+                "hedge_cost":     hedge_cost_total,
+                "residual":       residual,
+                "total":          mtm_pnl,
+            }
             daily_pnl.append(attr["total"])
             daily_attribution.append(attr)
 
