@@ -64,12 +64,7 @@ class BacktestEngine:
                 S_true = prices[idx + 1]
                 S_stale = prices[max(0, idx + 1 - staleness)]
 
-                # Update rolling log-return window (no look-ahead)
-                log_ret = np.log(prices[idx + 1] / prices[idx])
-                log_ret_history.append(log_ret)
-                if len(log_ret_history) > sigma_window:
-                    log_ret_history.pop(0)
-
+                # Compute sigma_implied from existing history (no look-ahead)
                 sigma_implied = float(np.std(log_ret_history) * np.sqrt(252 * spd))
                 sigma_implied = max(sigma_implied, 0.01)
                 sigma_uncertainty = sigma_implied
@@ -128,6 +123,12 @@ class BacktestEngine:
                                 "size": fill_size,
                                 "contract_size": contract_size,
                             })
+
+                # Update rolling log-return window after quoting/trading (eliminates look-ahead bias)
+                log_ret = np.log(prices[idx + 1] / prices[idx])
+                log_ret_history.append(log_ret)
+                if len(log_ret_history) > sigma_window:
+                    log_ret_history.pop(0)
 
                 # Delta hedge at end of each step
                 all_pos_now = []
