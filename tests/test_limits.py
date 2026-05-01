@@ -6,7 +6,7 @@ def test_full_size_within_limits():
     size = rl.adjusted_quote_size(
         desired_size=10, portfolio_gamma=100.0, portfolio_vega=2000.0, current_leg_position=5
     )
-    assert size == 10
+    assert size == 8  # gamma at 80% capacity → fraction=0.8 → int(10*0.8)=8
 
 
 def test_gamma_limit_scales_down():
