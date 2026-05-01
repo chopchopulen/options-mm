@@ -38,3 +38,18 @@ def theta(S: float, K: float, T: float, r: float, sigma: float, option_type: str
     if option_type == "call":
         return term1 - r * K * discount * norm.cdf(d2)
     return term1 + r * K * discount * norm.cdf(-d2)
+
+
+def vanna(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    if T <= 0:
+        return 0.0
+    d1 = bs_d1(S, K, T, r, sigma)
+    return vega(S, K, T, r, sigma) * d1 / (S * sigma * np.sqrt(T))
+
+
+def volga(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    if T <= 0:
+        return 0.0
+    d1 = bs_d1(S, K, T, r, sigma)
+    d2 = bs_d2(S, K, T, r, sigma)
+    return vega(S, K, T, r, sigma) * d1 * d2 / sigma

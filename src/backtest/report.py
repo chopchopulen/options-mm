@@ -35,7 +35,7 @@ def print_summary(results: Dict) -> None:
     print(f"  Max Drawdown:       ${_max_drawdown(pnl):>10.2f}")
     print()
     print("  P&L Attribution (cumulative):")
-    for col in ["spread_capture", "theta_pnl", "gamma_pnl", "vega_pnl", "hedge_cost", "residual"]:
+    for col in ["spread_capture", "theta_pnl", "gamma_pnl", "vega_pnl", "vanna_pnl", "volga_pnl", "hedge_cost", "residual"]:
         print(f"    {col:<22} ${df[col].sum():>10.2f}")
     residual_total = df["residual"].sum()
     residual_pct   = abs(residual_total / results["total_pnl"]) * 100 if results["total_pnl"] != 0 else 0

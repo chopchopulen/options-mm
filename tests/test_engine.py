@@ -15,6 +15,7 @@ def test_attribution_residual_small_each_day():
         # The accounting identity must always hold: components + residual = total
         component_sum = (day["spread_capture"] + day["theta_pnl"]
                          + day["gamma_pnl"] + day["vega_pnl"]
+                         + day["vanna_pnl"] + day["volga_pnl"]
                          + day["hedge_cost"] + day["residual"])
         assert abs(component_sum - day["total"]) < 1e-8, f"Identity broken: {day}"
         # With proper mark-to-market P&L, theta/gamma/vega are non-trivial,

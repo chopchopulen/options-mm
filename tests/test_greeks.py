@@ -83,3 +83,27 @@ def test_portfolio_delta_is_sum():
 def test_portfolio_empty():
     g = portfolio_greeks([], contract_size=100)
     assert g["delta"] == 0.0 and g["gamma"] == 0.0
+
+
+from src.greeks.analytical import vanna, volga
+
+def test_vanna_sign():
+    # For ATM option, d1 > 0, vega > 0, so vanna > 0
+    v = vanna(100.0, 100.0, 1.0, 0.05, 0.2)
+    assert v > 0
+
+def test_volga_sign():
+    # OTM option (S < K) has |d1|*|d2| > 0 and same sign → volga > 0 for OTM
+    v = volga(90.0, 100.0, 1.0, 0.0, 0.2)
+    assert v > 0
+
+def test_vanna_zero_at_expiry():
+    assert vanna(100.0, 100.0, 0.0, 0.05, 0.2) == 0.0
+
+def test_volga_zero_at_expiry():
+    assert volga(100.0, 100.0, 0.0, 0.05, 0.2) == 0.0
+
+def test_portfolio_greeks_has_vanna_volga():
+    positions = [{"S": 100.0, "K": 100.0, "T": 1.0, "r": 0.05, "sigma": 0.2, "option_type": "call", "quantity": 10}]
+    g = portfolio_greeks(positions, contract_size=100)
+    assert "vanna" in g and "volga" in g

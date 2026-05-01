@@ -81,6 +81,10 @@ class BacktestEngine:
             daily_theta_pnl = 0.0
             daily_gamma_pnl = 0.0
             daily_vega_pnl  = 0.0
+            daily_vanna_pnl = 0.0
+            daily_volga_pnl = 0.0
+            S_prev     = S_sod
+            sigma_prev = sigma_sod
 
             for step in range(spd):
                 idx     = day * spd + step
@@ -179,6 +183,20 @@ class BacktestEngine:
                 daily_theta_pnl += port_now["theta"] * step_dt
                 daily_gamma_pnl += 0.5 * port_now["gamma"] * S_true**2 * (step_realized_var - step_implied_var) * step_dt
 
+                # Accumulate intraday vanna and volga P&L
+                # Use intraday dS * dsigma and dsigma^2 step contributions
+                step_dS     = S_true - S_prev
+                step_dsigma = sigma_implied - sigma_prev
+                daily_vanna_pnl += port_now["vanna"] * step_dS * step_dsigma
+                # Volga: use net daily sigma move rather than sum(dsigma_step^2)
+                # because MTM P&L only reflects SOD→EOD book value change;
+                # intraday sigma oscillations do not affect the MTM.
+                # daily_volga_pnl is updated at end-of-day below.
+
+                # Update previous values for next step
+                S_prev     = S_true
+                sigma_prev = sigma_implied
+
             # End of day
             S_eod = prices[(day + 1) * spd]
             eod_book = self._book_value(options, inventory, S_eod, sigma_implied, r, day + 1, contract_size)
@@ -202,19 +220,29 @@ class BacktestEngine:
             port_eod = portfolio_greeks(eod_pos, contract_size)
             daily_vega_pnl = port_eod["vega"] * delta_sigma
 
+            # Volga P&L: use EOD portfolio greeks and net (SOD→EOD) sigma change squared
+            # MTM book only reflects the net sigma change, not intraday oscillations
+            delta_S = S_eod - S_sod
+            daily_volga_pnl = 0.5 * port_eod["volga"] * delta_sigma ** 2
+            # Vanna P&L: overwrite intraday sum with EOD-based net move
+            # (consistent with how vega and volga are computed from net daily moves)
+            daily_vanna_pnl = port_eod["vanna"] * delta_S * delta_sigma
+
             # Build attribution dict using intraday-accumulated Greek P&L components
             spread_capture = sum(
                 f["spread_captured"] * f["size"] * f["contract_size"]
                 for f in day_spread_fills
             )
             hedge_cost_total = -sum(day_hedge_costs)
-            residual = mtm_pnl - (spread_capture + daily_theta_pnl + daily_gamma_pnl + daily_vega_pnl + hedge_cost_total)
+            residual = mtm_pnl - (spread_capture + daily_theta_pnl + daily_gamma_pnl + daily_vega_pnl + daily_vanna_pnl + daily_volga_pnl + hedge_cost_total)
 
             attr = {
                 "spread_capture": spread_capture,
                 "theta_pnl":      daily_theta_pnl,
                 "gamma_pnl":      daily_gamma_pnl,
                 "vega_pnl":       daily_vega_pnl,
+                "vanna_pnl":      daily_vanna_pnl,
+                "volga_pnl":      daily_volga_pnl,
                 "hedge_cost":     hedge_cost_total,
                 "residual":       residual,
                 "total":          mtm_pnl,
