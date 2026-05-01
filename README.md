@@ -43,7 +43,7 @@ src/
     report.py         ← summary table + 5-panel matplotlib visualization
     data.py           ← yfinance SPY IV surface loader + Heston calibration
 
-tests/               ← 55 pytest tests (run: pytest tests/ -v)
+tests/               ← 66 pytest tests (run: pytest tests/ -v)
 run_backtest.py      ← entry point
 ```
 
@@ -53,8 +53,9 @@ run_backtest.py      ← entry point
 
 ```bash
 pip install numpy scipy pandas matplotlib pytest yfinance
-pytest tests/ -v          # 55 tests, all should pass
-python3 run_backtest.py   # 30-day simulation, saves backtest_results.png
+pytest tests/ -v                    # 66 tests, all should pass
+python3 run_backtest.py             # 30-day simulation, saves backtest_results.png
+python3 src/backtest/sensitivity.py # parameter grid search, saves results/sensitivity.csv
 ```
 
 ---
@@ -75,8 +76,12 @@ OPTIONS MARKET MAKER — BACKTEST SUMMARY
     theta_pnl              $ -12002.57
     gamma_pnl              $   2006.81
     vega_pnl               $  21597.79
+    vanna_pnl              $   -562.08
+    volga_pnl              $  23002.63
     hedge_cost             $ -29851.80
-    residual               $  29772.34
+    residual               $   7331.79
+
+  Residual: $7331.79  (21.67% of total)  ✓
 ============================================================
 ```
 
@@ -162,10 +167,12 @@ Daily P&L decomposes into five economic components:
 | `theta_pnl` | Σ_steps portfolio_theta × dt | Time decay (positive when short options) |
 | `gamma_pnl` | Σ_steps ½ × Γ × S² × (σ²_realized − σ²_implied) × dt | Variance differential: profit if realized vol > implied |
 | `vega_pnl` | portfolio_vega_EOD × (σ_EOD − σ_SOD) | P&L from shifts in implied vol level |
+| `vanna_pnl` | portfolio_vanna_EOD × ΔS × Δσ | Cross-gamma: P&L from joint spot-vol moves |
+| `volga_pnl` | ½ × portfolio_volga_EOD × Δσ² | Vol convexity: P&L from curvature in vol |
 | `hedge_cost` | −Σ transaction costs | Always ≤ 0 |
-| `residual` | mtm_pnl − all of the above | What the first-order model cannot explain |
+| `residual` | mtm_pnl − all of the above | Higher-order terms not captured by this expansion |
 
-The accounting identity `components + residual ≡ mtm_pnl` holds to machine precision by construction. The residual (~88% here) is structural — it reflects discrete hedging error, rolling-window IV estimation lagging Heston vol spikes, and second-order cross-Greek effects (vanna, volga) that a first-order Taylor expansion cannot capture. Large residuals are expected and honest in a Heston simulation with 5-minute bars.
+The accounting identity `components + residual ≡ mtm_pnl` holds to machine precision. Adding vanna and volga reduces the residual from ~88% (first-order only) to ~22% — the remaining residual reflects third-order effects and discrete-hedging approximation error.
 
 MTM P&L is `(EOD book value − SOD book value) + realized P&L from closes + underlying position P&L`, where book value = BS price × quantity × 100.
 
@@ -213,18 +220,50 @@ BACKTEST = dict(
 | Black-Scholes | 5 | Put-call parity, known ATM value, deep ITM, expiry, invalid type |
 | Binomial | 2 | Convergence to BS at 500 steps, put-call parity |
 | Monte Carlo | 2 | Accuracy within $0.10, antithetic variance reduction |
-| Analytical Greeks | 8 | Delta range, delta sum, gamma symmetry, theta sign, ATM delta |
-| Numerical Greeks | 4 | FD agrees with analytical to 4 decimal places |
-| Portfolio Greeks | 3 | Aggregation, linearity, empty book |
+| Analytical Greeks | 8 | Delta range, delta sum, gamma symmetry, theta sign, ATM delta; vanna/volga sign and zero-at-expiry |
+| Numerical Greeks | 6 | FD agrees with analytical to 4 decimal places for all 6 Greeks including vanna/volga |
+| Portfolio Greeks | 3 | Aggregation, linearity, empty book; includes vanna/volga keys |
 | Heston Simulator | 4 | Output shape, variance positivity, price positivity, seed independence |
 | Order Flow | 4 | No informed when prices equal, correct side, fields, size ordering |
 | Quoter | 4 | bid < ask, symmetric, widens with gamma, widens with vol uncertainty |
 | Inventory | 4 | Fill direction, buy/sell, underlying tracking, realized P&L on close |
 | Hedger | 4 | Below threshold, above threshold, negative delta, inventory update |
 | Risk Limits | 4 | Full size, gamma scale-down, position cap, at-limit zero |
-| P&L Attributor | 4 | Fields present, identity holds to 1e-10, short-call theta sign, zeros |
-| Backtest Engine | 3 | Smoke test, attribution identity each day, total sums daily |
+| P&L Attributor | 5 | Fields present, identity holds to 1e-10, short-call theta sign, zeros, non-zero vanna/volga pass-through |
+| Backtest Engine | 3 | Smoke test, attribution identity each day (includes vanna/volga), total sums daily |
+| Sensitivity | 3 | CSV created with correct columns, returns DataFrame, best combo has valid floats |
 
 ```bash
-pytest tests/ -v   # all 55 pass
+pytest tests/ -v   # all 66 pass
 ```
+
+---
+
+## Parameter Sensitivity Analysis
+
+Run a 27-combo grid search over key parameters to find the regime that maximizes out-of-sample Sharpe:
+
+```bash
+python3 src/backtest/sensitivity.py   # ~25 min, saves results/sensitivity.csv
+```
+
+Grid:
+- `hedge_threshold`: [10, 25, 50] shares — how aggressively to delta-hedge
+- `base_spread_bps`: [10, 20, 50] bps — minimum quote width
+- `informed_threshold`: [0.001, 0.002, 0.005] — staleness gap before informed traders arrive
+
+Each combo is averaged across 5 random seeds and ranked by mean Sharpe.
+
+---
+
+## Resume Bullets
+
+> Built a production-quality options market making simulator in Python: implemented Black-Scholes, binomial tree, and Monte Carlo (antithetic variates) pricers validated against put-call parity and inter-model convergence tests.
+
+> Implemented a real-time Greeks engine (Delta, Gamma, Vega, Theta, Vanna, Volga) analytically and via finite differences, with agreement verified to 4 decimal places; aggregated portfolio-level Greeks across a multi-strike, multi-expiry option book.
+
+> Modeled realistic adverse selection using a two-population order flow model (Glosten-Milgrom-inspired): informed traders exploit quote staleness from a Heston stochastic-vol underlying, making the simulation genuinely risky rather than trivially spread-collecting.
+
+> Built second-order P&L attribution decomposing daily returns into spread capture, theta, gamma, vega, vanna, and volga — with a hard closure test asserting components sum to mark-to-market P&L to machine precision; adding vanna/volga reduced the unexplained residual from 88% to 22%.
+
+> Ran a parameter sensitivity grid search (27 combos × 5 seeds) over hedge threshold, spread width, and adverse-selection threshold; ranked results by mean Sharpe and exported to CSV for strategy optimization.
