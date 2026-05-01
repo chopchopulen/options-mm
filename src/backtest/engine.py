@@ -2,13 +2,12 @@ import numpy as np
 from src.market.underlying import HestonSimulator
 from src.market.order_flow import OrderFlowSimulator
 from src.pricing.black_scholes import bs_price
-from src.greeks.analytical import delta, gamma, vega, theta
+from src.greeks.analytical import gamma, vega
 from src.greeks.portfolio import portfolio_greeks
 from src.mm.quoter import Quoter
 from src.mm.inventory import Inventory
 from src.mm.hedger import DeltaHedger
 from src.risk.limits import RiskLimits
-from src.pnl.attribution import PnLAttributor
 
 TRADING_DAYS = 252
 
@@ -57,7 +56,6 @@ class BacktestEngine:
         inventory = Inventory(contract_size=self.cfg.QUOTER["contract_size"])
         hedger    = DeltaHedger(**self.cfg.HEDGER)
         risk      = RiskLimits(**self.cfg.RISK)
-        attributor = PnLAttributor()
 
         options = self._build_option_universe(self.cfg.HESTON["S0"])
         contract_size = self.cfg.QUOTER["contract_size"]
@@ -77,10 +75,9 @@ class BacktestEngine:
             realized_pnl_sod = inventory.realized_pnl
             underlying_sod = inventory.underlying_position * S_sod
 
-            # Initialize intraday attribution accumulators
+            # Initialize intraday attribution accumulators (theta/gamma: step-by-step; vega/vanna/volga: set at EOD)
             daily_theta_pnl = 0.0
             daily_gamma_pnl = 0.0
-            daily_vega_pnl  = 0.0
 
             for step in range(spd):
                 idx     = day * spd + step
@@ -179,6 +176,7 @@ class BacktestEngine:
                 daily_theta_pnl += port_now["theta"] * step_dt
                 daily_gamma_pnl += 0.5 * port_now["gamma"] * S_true**2 * (step_realized_var - step_implied_var) * step_dt
 
+
             # End of day
             S_eod = prices[(day + 1) * spd]
             eod_book = self._book_value(options, inventory, S_eod, sigma_implied, r, day + 1, contract_size)
@@ -202,19 +200,29 @@ class BacktestEngine:
             port_eod = portfolio_greeks(eod_pos, contract_size)
             daily_vega_pnl = port_eod["vega"] * delta_sigma
 
+            # Volga P&L: use EOD portfolio greeks and net (SOD→EOD) sigma change squared
+            # MTM book only reflects the net sigma change, not intraday oscillations
+            delta_S = S_eod - S_sod
+            daily_volga_pnl = 0.5 * port_eod["volga"] * delta_sigma ** 2
+            # Vanna P&L: overwrite intraday sum with EOD-based net move
+            # (consistent with how vega and volga are computed from net daily moves)
+            daily_vanna_pnl = port_eod["vanna"] * delta_S * delta_sigma
+
             # Build attribution dict using intraday-accumulated Greek P&L components
             spread_capture = sum(
                 f["spread_captured"] * f["size"] * f["contract_size"]
                 for f in day_spread_fills
             )
             hedge_cost_total = -sum(day_hedge_costs)
-            residual = mtm_pnl - (spread_capture + daily_theta_pnl + daily_gamma_pnl + daily_vega_pnl + hedge_cost_total)
+            residual = mtm_pnl - (spread_capture + daily_theta_pnl + daily_gamma_pnl + daily_vega_pnl + daily_vanna_pnl + daily_volga_pnl + hedge_cost_total)
 
             attr = {
                 "spread_capture": spread_capture,
                 "theta_pnl":      daily_theta_pnl,
                 "gamma_pnl":      daily_gamma_pnl,
                 "vega_pnl":       daily_vega_pnl,
+                "vanna_pnl":      daily_vanna_pnl,
+                "volga_pnl":      daily_volga_pnl,
                 "hedge_cost":     hedge_cost_total,
                 "residual":       residual,
                 "total":          mtm_pnl,

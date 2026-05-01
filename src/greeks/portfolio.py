@@ -1,9 +1,9 @@
 from typing import List, Dict
-from src.greeks.analytical import delta, gamma, vega, theta
+from src.greeks.analytical import delta, gamma, vega, theta, vanna, volga
 
 
 def portfolio_greeks(positions: List[Dict], contract_size: int = 100) -> Dict[str, float]:
-    total = {"delta": 0.0, "gamma": 0.0, "vega": 0.0, "theta": 0.0}
+    total = {"delta": 0.0, "gamma": 0.0, "vega": 0.0, "theta": 0.0, "vanna": 0.0, "volga": 0.0}
     for pos in positions:
         S, K, T, r, sigma = pos["S"], pos["K"], pos["T"], pos["r"], pos["sigma"]
         ot = pos["option_type"]
@@ -12,4 +12,6 @@ def portfolio_greeks(positions: List[Dict], contract_size: int = 100) -> Dict[st
         total["gamma"] += gamma(S, K, T, r, sigma) * q
         total["vega"]  += vega(S, K, T, r, sigma) * q
         total["theta"] += theta(S, K, T, r, sigma, ot) * q
+        total["vanna"] += vanna(S, K, T, r, sigma) * q
+        total["volga"] += volga(S, K, T, r, sigma) * q
     return total
