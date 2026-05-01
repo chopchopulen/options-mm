@@ -10,36 +10,13 @@ from src.mm.hedger import DeltaHedger
 from src.risk.limits import RiskLimits
 from src.pnl.attribution import PnLAttributor
 
+TRADING_DAYS = 252
+
 
 class BacktestEngine:
     def __init__(self, cfg, seed: int = 42):
         self.cfg  = cfg
         self.seed = seed
-
-    @staticmethod
-    def _book_value(options, inventory, S, sigma, r, day, spd, contract_size):
-        """Compute mark-to-market value of all option positions.
-
-        Positions are stored in inventory keyed by (K, T_at_trade_time, option_type).
-        We aggregate net quantity per (K, option_type) across all stored T keys,
-        then price using current remaining time = (T_days/252) - (day/252).
-        """
-        # Aggregate net quantity per (K, option_type) across all stored expiry keys
-        net_qty = {}
-        for (K, T_stored, otype), pos in inventory.get_all_positions().items():
-            if pos["quantity"] != 0:
-                key = (K, otype)
-                net_qty[key] = net_qty.get(key, 0) + pos["quantity"]
-
-        total = 0.0
-        for o in options:
-            key = (o["K"], o["option_type"])
-            qty = net_qty.get(key, 0)
-            if qty != 0:
-                T_o = max(0.0001, (o["T_days"] / 252) - (day / 252))
-                price = bs_price(S, o["K"], T_o, r, sigma, o["option_type"])
-                total += qty * price * contract_size
-        return total
 
     def _build_option_universe(self, S0: float):
         opts = []
@@ -51,11 +28,22 @@ class BacktestEngine:
             })
         return opts
 
+    @staticmethod
+    def _book_value(options, inventory, S, sigma, r, days_elapsed, contract_size):
+        total = 0.0
+        for o in options:
+            T_o = max(0.0001, (o["T_days"] / TRADING_DAYS) - (days_elapsed / TRADING_DAYS))
+            qty = inventory.get_option_position(o["K"], o["T_days"], o["option_type"])
+            if qty != 0:
+                price = bs_price(S, o["K"], T_o, r, sigma, o["option_type"])
+                total += qty * price * contract_size
+        return total
+
     def run(self):
         bt   = self.cfg.BACKTEST
         n_days   = bt["n_days"]
         spd      = bt["steps_per_day"]
-        dt       = 1 / 252 / spd
+        dt       = 1.0 / TRADING_DAYS / spd
         r        = bt["risk_free_rate"]
         sigma_window = bt["sigma_uncertainty_window"]
         staleness = bt["quote_staleness_steps"]
@@ -82,31 +70,30 @@ class BacktestEngine:
         for day in range(n_days):
             day_spread_fills = []
             day_hedge_costs  = []
-            sigma_sod        = sigma_implied  # start-of-day IV for delta_sigma
+            sigma_sod        = sigma_implied
 
-            # Start-of-day snapshots for mark-to-market P&L
             S_sod = prices[day * spd]
-            sod_book = self._book_value(options, inventory, S_sod, sigma_implied, r, day, spd, contract_size)
+            sod_book = self._book_value(options, inventory, S_sod, sigma_implied, r, day, contract_size)
             realized_pnl_sod = inventory.realized_pnl
             underlying_sod = inventory.underlying_position * S_sod
 
             for step in range(spd):
-                idx    = day * spd + step
-                S_true = prices[idx + 1]
+                idx     = day * spd + step
+                S_true  = prices[idx + 1]
                 S_stale = prices[max(0, idx + 1 - staleness)]
 
                 # Compute sigma_implied from existing history (no look-ahead)
-                sigma_implied = float(np.std(log_ret_history) * np.sqrt(252 * spd))
+                sigma_implied = float(np.std(log_ret_history) * np.sqrt(TRADING_DAYS * spd))
                 sigma_implied = max(sigma_implied, 0.01)
                 sigma_uncertainty = sigma_implied
 
-                # Compute portfolio greeks once per step (O(N) instead of O(N^2))
+                # Compute portfolio greeks once per step
                 all_pos = []
                 for o in options:
-                    T_o = (o["T_days"] / 252) - (day / 252) - (step / (252 * spd))
+                    T_o = (o["T_days"] / TRADING_DAYS) - (day / TRADING_DAYS) - (step / (TRADING_DAYS * spd))
                     if T_o <= 0:
                         continue
-                    qty = inventory.get_option_position(o["K"], T_o, o["option_type"])
+                    qty = inventory.get_option_position(o["K"], o["T_days"], o["option_type"])
                     all_pos.append({
                         "S": S_stale, "K": o["K"], "T": T_o,
                         "r": r, "sigma": sigma_implied,
@@ -115,7 +102,7 @@ class BacktestEngine:
                 port_g = portfolio_greeks(all_pos, contract_size)
 
                 for opt in options:
-                    T_remaining = (opt["T_days"] / 252) - (day / 252) - (step / (252 * spd))
+                    T_remaining = (opt["T_days"] / TRADING_DAYS) - (day / TRADING_DAYS) - (step / (TRADING_DAYS * spd))
                     if T_remaining <= 0:
                         continue
 
@@ -123,7 +110,7 @@ class BacktestEngine:
                     g       = gamma(S_stale, opt["K"], T_remaining, r, sigma_implied)
                     v_greek = vega(S_stale, opt["K"], T_remaining, r, sigma_implied)
 
-                    leg_pos = abs(inventory.get_option_position(opt["K"], T_remaining, opt["option_type"]))
+                    leg_pos = abs(inventory.get_option_position(opt["K"], opt["T_days"], opt["option_type"]))
 
                     size = risk.adjusted_quote_size(
                         desired_size=bt["desired_quote_size"],
@@ -140,7 +127,8 @@ class BacktestEngine:
                     for trade in trades:
                         fill_size = min(trade["size"], size)
                         if trade["side"] == "buy":
-                            inventory.fill_option(opt["K"], T_remaining, opt["option_type"],
+                            # Counterparty buys → MM sells at ask
+                            inventory.fill_option(opt["K"], opt["T_days"], opt["option_type"],
                                                   "sell", fill_size, ask)
                             day_spread_fills.append({
                                 "spread_captured": ask - fair,
@@ -148,7 +136,8 @@ class BacktestEngine:
                                 "contract_size": contract_size,
                             })
                         else:
-                            inventory.fill_option(opt["K"], T_remaining, opt["option_type"],
+                            # Counterparty sells → MM buys at bid
+                            inventory.fill_option(opt["K"], opt["T_days"], opt["option_type"],
                                                   "buy", fill_size, bid)
                             day_spread_fills.append({
                                 "spread_captured": fair - bid,
@@ -156,7 +145,7 @@ class BacktestEngine:
                                 "contract_size": contract_size,
                             })
 
-                # Update rolling log-return window after quoting/trading (eliminates look-ahead bias)
+                # Update rolling log-return window after quoting/trading (no look-ahead)
                 log_ret = np.log(prices[idx + 1] / prices[idx])
                 log_ret_history.append(log_ret)
                 if len(log_ret_history) > sigma_window:
@@ -165,9 +154,8 @@ class BacktestEngine:
                 # Delta hedge at end of each step
                 all_pos_now = []
                 for o in options:
-                    T_o = (o["T_days"] / 252) - (day / 252) - ((step + 1) / (252 * spd))
-                    T_o = max(T_o, 0.0001)
-                    qty = inventory.get_option_position(o["K"], T_o, o["option_type"])
+                    T_o = max(0.0001, (o["T_days"] / TRADING_DAYS) - (day / TRADING_DAYS) - ((step + 1) / (TRADING_DAYS * spd)))
+                    qty = inventory.get_option_position(o["K"], o["T_days"], o["option_type"])
                     all_pos_now.append({
                         "S": S_true, "K": o["K"], "T": T_o,
                         "r": r, "sigma": sigma_implied,
@@ -182,33 +170,27 @@ class BacktestEngine:
             # End of day
             day_prices   = [prices[day * spd + i] for i in range(spd + 1)]
             log_rets_day = np.diff(np.log(day_prices))
-            realized_var = float(np.var(log_rets_day) * 252 * spd)
+            realized_var = float(np.var(log_rets_day) * TRADING_DAYS * spd)
             implied_var  = sigma_implied ** 2
             delta_sigma  = sigma_implied - sigma_sod
 
             S_eod = prices[(day + 1) * spd]
-            # Aggregate net quantities per (K, option_type) across all stored T keys
-            net_qty_eod = {}
-            for (K, T_stored, otype), pos in inventory.get_all_positions().items():
-                if pos["quantity"] != 0:
-                    net_qty_eod[(K, otype)] = net_qty_eod.get((K, otype), 0) + pos["quantity"]
+            eod_book = self._book_value(options, inventory, S_eod, sigma_implied, r, day + 1, contract_size)
+            realized_pnl_delta = inventory.realized_pnl - realized_pnl_sod
+            underlying_eod = inventory.underlying_position * S_eod
+            underlying_pnl = underlying_eod - underlying_sod
+            mtm_pnl = (eod_book - sod_book) + realized_pnl_delta + underlying_pnl
+
             eod_pos = []
             for o in options:
-                T_o = max(0.0001, (o["T_days"] / 252) - ((day + 1) / 252))
-                qty = net_qty_eod.get((o["K"], o["option_type"]), 0)
+                T_o = max(0.0001, (o["T_days"] / TRADING_DAYS) - ((day + 1) / TRADING_DAYS))
+                qty = inventory.get_option_position(o["K"], o["T_days"], o["option_type"])
                 eod_pos.append({
                     "S": S_eod, "K": o["K"], "T": T_o,
                     "r": r, "sigma": sigma_implied,
                     "option_type": o["option_type"], "quantity": qty,
                 })
             port_eod = portfolio_greeks(eod_pos, contract_size)
-
-            # Proper mark-to-market P&L: change in total portfolio value
-            eod_book = self._book_value(options, inventory, S_eod, sigma_implied, r, day + 1, spd, contract_size)
-            realized_pnl_delta = inventory.realized_pnl - realized_pnl_sod
-            underlying_eod = inventory.underlying_position * S_eod
-            underlying_pnl = underlying_eod - underlying_sod
-            mtm_pnl = (eod_book - sod_book) + realized_pnl_delta + underlying_pnl
 
             attr = attributor.compute(
                 spread_fills=day_spread_fills,
@@ -221,7 +203,7 @@ class BacktestEngine:
                 delta_sigma_implied=delta_sigma,
                 hedge_costs=day_hedge_costs,
                 mtm_pnl=mtm_pnl,
-                dt=1 / 252,
+                dt=1.0 / TRADING_DAYS,
             )
             daily_pnl.append(attr["total"])
             daily_attribution.append(attr)
