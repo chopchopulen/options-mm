@@ -83,8 +83,6 @@ class BacktestEngine:
             daily_vega_pnl  = 0.0
             daily_vanna_pnl = 0.0
             daily_volga_pnl = 0.0
-            S_prev     = S_sod
-            sigma_prev = sigma_sod
 
             for step in range(spd):
                 idx     = day * spd + step
@@ -183,19 +181,6 @@ class BacktestEngine:
                 daily_theta_pnl += port_now["theta"] * step_dt
                 daily_gamma_pnl += 0.5 * port_now["gamma"] * S_true**2 * (step_realized_var - step_implied_var) * step_dt
 
-                # Accumulate intraday vanna and volga P&L
-                # Use intraday dS * dsigma and dsigma^2 step contributions
-                step_dS     = S_true - S_prev
-                step_dsigma = sigma_implied - sigma_prev
-                daily_vanna_pnl += port_now["vanna"] * step_dS * step_dsigma
-                # Volga: use net daily sigma move rather than sum(dsigma_step^2)
-                # because MTM P&L only reflects SOD→EOD book value change;
-                # intraday sigma oscillations do not affect the MTM.
-                # daily_volga_pnl is updated at end-of-day below.
-
-                # Update previous values for next step
-                S_prev     = S_true
-                sigma_prev = sigma_implied
 
             # End of day
             S_eod = prices[(day + 1) * spd]

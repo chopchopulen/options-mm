@@ -88,8 +88,8 @@ def test_portfolio_empty():
 from src.greeks.analytical import vanna, volga
 
 def test_vanna_sign():
-    # For ATM option, d1 > 0, vega > 0, so vanna > 0
-    v = vanna(100.0, 100.0, 1.0, 0.05, 0.2)
+    # OTM put (S<K): d2 < 0, vega > 0, so vanna = -vega*d2/(S*sigma*sqrt(T)) > 0
+    v = vanna(90.0, 100.0, 1.0, 0.05, 0.2)
     assert v > 0
 
 def test_volga_sign():

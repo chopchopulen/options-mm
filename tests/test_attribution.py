@@ -76,3 +76,17 @@ def test_no_activity_zero_pnl():
         delta_sigma_implied=0.0, hedge_costs=[], mtm_pnl=0.0, dt=1/252,
     )
     assert result["total"] == 0.0 and result["residual"] == 0.0
+
+
+def test_nonzero_vanna_volga_pass_through():
+    attr = PnLAttributor()
+    result = attr.compute(
+        spread_fills=[],
+        portfolio_theta=0.0, portfolio_gamma=0.0, portfolio_vega=0.0,
+        portfolio_vanna=5.0, portfolio_volga=3.0,
+        S=100.0, realized_variance=0.04/252, implied_variance=0.04/252,
+        delta_sigma_implied=0.0, hedge_costs=[], mtm_pnl=8.0, dt=1/252,
+    )
+    assert abs(result["vanna_pnl"] - 5.0) < 1e-10
+    assert abs(result["volga_pnl"] - 3.0) < 1e-10
+    assert abs(result["residual"] - 0.0) < 1e-10
