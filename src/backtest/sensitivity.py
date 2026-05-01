@@ -13,7 +13,6 @@ import os
 import sys
 import types
 import itertools
-import copy
 from pathlib import Path
 
 # Ensure project root is on sys.path when the file is executed directly
@@ -193,9 +192,9 @@ def run_sensitivity(seeds=None, grid_override=None) -> pd.DataFrame:
               f"{'HedgeCost':>11}  {'SprdCap':>10}")
     print(header)
     print("-" * 85)
-    for rank, row in df.iterrows():
+    for rank, row in enumerate(df.itertuples(), start=1):
         print(
-            f"{rank+1:>4}  {row.hedge_threshold:>6.0f}  {row.base_spread_bps:>7.0f}  "
+            f"{rank:>4}  {row.hedge_threshold:>6.0f}  {row.base_spread_bps:>7.0f}  "
             f"{row.informed_threshold:>8.4f}  {row.mean_sharpe:>8.3f}  "
             f"{row.std_sharpe:>7.3f}  {row.mean_total_pnl:>10.2f}  "
             f"{row.mean_hedge_cost:>11.2f}  {row.mean_spread_capture:>10.2f}"

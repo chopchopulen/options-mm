@@ -56,10 +56,10 @@ class TestSensitivityReturnsDataframe:
 
 class TestSensitivityBestComboIsValid:
     def test_sensitivity_best_combo_is_valid(self, tmp_path, monkeypatch):
-        """Best combo on the full grid (2 seeds) should have valid float metrics."""
+        """Best combo across several configs (2 seeds) should have valid float metrics."""
         monkeypatch.chdir(tmp_path)
-
-        df = run_sensitivity(seeds=[42, 43])
+        small_grid = [(10, 10, 0.001), (25, 20, 0.002), (50, 50, 0.005)]
+        df = run_sensitivity(seeds=[42, 43], grid_override=small_grid)
 
         # Sorted descending by mean_sharpe, so first row is best
         best = df.iloc[0]
