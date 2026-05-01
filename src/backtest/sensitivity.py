@@ -187,7 +187,7 @@ def run_sensitivity(seeds=None, grid_override=None) -> pd.DataFrame:
     print("\n" + "=" * 85)
     print("SENSITIVITY ANALYSIS — RANKED BY MEAN SHARPE")
     print("=" * 85)
-    header = (f"{'Rank':>4}  {'HgThr':>6}  {'BpsBps':>7}  {'InfThr':>8}  "
+    header = (f"{'Rank':>4}  {'HgThr':>6}  {'SprBps':>7}  {'InfThr':>8}  "
               f"{'Sharpe':>8}  {'StdShr':>7}  {'TotalPnL':>10}  "
               f"{'HedgeCost':>11}  {'SprdCap':>10}")
     print(header)

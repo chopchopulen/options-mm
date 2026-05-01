@@ -2,7 +2,7 @@ import numpy as np
 from src.market.underlying import HestonSimulator
 from src.market.order_flow import OrderFlowSimulator
 from src.pricing.black_scholes import bs_price
-from src.greeks.analytical import delta, gamma, vega, theta
+from src.greeks.analytical import gamma, vega
 from src.greeks.portfolio import portfolio_greeks
 from src.mm.quoter import Quoter
 from src.mm.inventory import Inventory
@@ -75,12 +75,9 @@ class BacktestEngine:
             realized_pnl_sod = inventory.realized_pnl
             underlying_sod = inventory.underlying_position * S_sod
 
-            # Initialize intraday attribution accumulators
+            # Initialize intraday attribution accumulators (theta/gamma: step-by-step; vega/vanna/volga: set at EOD)
             daily_theta_pnl = 0.0
             daily_gamma_pnl = 0.0
-            daily_vega_pnl  = 0.0
-            daily_vanna_pnl = 0.0
-            daily_volga_pnl = 0.0
 
             for step in range(spd):
                 idx     = day * spd + step
