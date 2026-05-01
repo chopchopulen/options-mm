@@ -8,7 +8,6 @@ from src.mm.quoter import Quoter
 from src.mm.inventory import Inventory
 from src.mm.hedger import DeltaHedger
 from src.risk.limits import RiskLimits
-from src.pnl.attribution import PnLAttributor
 
 TRADING_DAYS = 252
 
@@ -57,7 +56,6 @@ class BacktestEngine:
         inventory = Inventory(contract_size=self.cfg.QUOTER["contract_size"])
         hedger    = DeltaHedger(**self.cfg.HEDGER)
         risk      = RiskLimits(**self.cfg.RISK)
-        attributor = PnLAttributor()
 
         options = self._build_option_universe(self.cfg.HESTON["S0"])
         contract_size = self.cfg.QUOTER["contract_size"]

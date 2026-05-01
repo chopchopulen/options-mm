@@ -107,3 +107,14 @@ def test_portfolio_greeks_has_vanna_volga():
     positions = [{"S": 100.0, "K": 100.0, "T": 1.0, "r": 0.05, "sigma": 0.2, "option_type": "call", "quantity": 10}]
     g = portfolio_greeks(positions, contract_size=100)
     assert "vanna" in g and "volga" in g
+
+
+from src.greeks.numerical import vanna_fd, volga_fd
+
+def test_fd_vanna_matches_analytical():
+    S, K, T, r, sigma = 100.0, 100.0, 1.0, 0.05, 0.2
+    assert abs(vanna_fd(S, K, T, r, sigma) - vanna(S, K, T, r, sigma)) < 1e-3
+
+def test_fd_volga_matches_analytical():
+    S, K, T, r, sigma = 100.0, 100.0, 1.0, 0.05, 0.2
+    assert abs(volga_fd(S, K, T, r, sigma) - volga(S, K, T, r, sigma)) < 1e-2

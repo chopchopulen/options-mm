@@ -63,8 +63,8 @@ def plot_results(results: Dict, save_path: str = None) -> None:
 
     # Daily P&L Attribution stacked bar
     ax2 = fig.add_subplot(gs[1, 0])
-    components = ["spread_capture", "theta_pnl", "gamma_pnl", "vega_pnl", "hedge_cost"]
-    colors     = ["green", "orange", "blue", "purple", "red"]
+    components = ["spread_capture", "theta_pnl", "gamma_pnl", "vega_pnl", "vanna_pnl", "volga_pnl", "hedge_cost"]
+    colors     = ["green", "orange", "blue", "purple", "teal", "brown", "red"]
     bottom_pos = np.zeros(len(df))
     bottom_neg = np.zeros(len(df))
     for comp, color in zip(components, colors):
