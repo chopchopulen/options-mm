@@ -70,9 +70,9 @@ The simulation prints a summary table after 30 × 78 = 2,340 steps:
 | `gamma_pnl` | Profit from realized vs. implied variance differential (Γ/2 × S² × (σ²_realized − σ²_implied) × dt) |
 | `vega_pnl` | P&L from changes in implied volatility (Vega × Δσ) |
 | `hedge_cost` | Transaction costs paid on delta-hedging trades (always ≤ 0) |
-| `residual` | Closure check: should be near zero; flags model error if > 1% of total |
+| `residual` | `MTM − (spread + θ + Γ + ν + hedge)` — always closes to zero by construction; nonzero components reflect first-order approximation error from discrete hedging and rolling-window IV estimation |
 
-A `✓` on the residual line means all components sum to mark-to-market P&L within 1%. A `✗` would indicate a model inconsistency.
+The closure identity `components + residual = total` holds to machine precision by construction. The residual quantifies how much of the MTM P&L the first-order Taylor expansion cannot explain — large residuals indicate nonlinear effects (vanna, volga, vol-of-vol), and are expected in simulations with Heston stochastic vol and rolling-window implied vol estimation.
 
 The saved `backtest_results.png` contains five panels: cumulative P&L, daily attribution stacked bar, underlying Heston price path, spread capture vs. hedge cost, and Gamma vs. Theta P&L.
 
