@@ -6,7 +6,7 @@ A production-quality options market making simulator in Python. The system quote
 
 ## What This Is
 
-This project simulates how a market maker (think Citadel, Jane Street, or SIG) runs a book of equity options. The MM posts bid and ask prices on 6 options simultaneously, earns the spread when traders hit the quotes, and continuously delta-hedges to stay roughly flat on direction. After 30 trading days, the P&L is decomposed into its economic causes using a first-order Greek approximation.
+This project simulates how a market maker runs a book of equity options. The MM posts bid and ask prices on 6 options simultaneously, earns the spread when traders hit the quotes, and continuously delta-hedges to stay roughly flat on direction. After 30 trading days, the P&L is decomposed into its economic causes using a first-order Greek approximation.
 
 The simulation is genuinely risky: a Heston stochastic-vol model drives the underlying, meaning implied vol clusters and spikes unpredictably. Informed traders exploit quote staleness whenever the MM's pricing lags the true price — this is the Glosten-Milgrom adverse selection mechanism. The MM can lose money.
 
@@ -228,17 +228,3 @@ BACKTEST = dict(
 ```bash
 pytest tests/ -v   # all 55 pass
 ```
-
----
-
-## Resume Bullets
-
-> Built a production-quality options market making simulator in Python: implemented Black-Scholes, binomial tree, and Monte Carlo (antithetic variates) pricers validated against put-call parity and inter-model convergence tests.
-
-> Implemented a real-time Greeks engine (Delta, Gamma, Vega, Theta) analytically and via finite differences, with agreement verified to 4 decimal places; aggregated portfolio-level Greeks across a multi-strike, multi-expiry option book.
-
-> Modeled realistic adverse selection using a two-population order flow model (Glosten-Milgrom-inspired): informed traders exploit quote staleness from a Heston stochastic-vol underlying, making the simulation genuinely risky rather than trivially spread-collecting.
-
-> Built P&L attribution that decomposes daily returns into spread capture, delta hedge cost, Gamma P&L (realized vs implied variance), Theta decay, and Vega P&L — with a hard closure test asserting components sum to mark-to-market P&L to machine precision.
-
-> Ran a 30-day market making backtest with configurable risk limits (Gamma/Vega caps, position limits per leg) and delta hedging rebalancing; reported Sharpe ratio, win rate, drawdown, and a 5-panel attribution visualization.
