@@ -69,6 +69,20 @@ class BacktestEngine:
                 sigma_implied = max(sigma_implied, 0.01)
                 sigma_uncertainty = sigma_implied
 
+                # Compute portfolio greeks once per step (O(N) instead of O(N^2))
+                all_pos = []
+                for o in options:
+                    T_o = (o["T_days"] / 252) - (day / 252) - (step / (252 * spd))
+                    if T_o <= 0:
+                        continue
+                    qty = inventory.get_option_position(o["K"], T_o, o["option_type"])
+                    all_pos.append({
+                        "S": S_stale, "K": o["K"], "T": T_o,
+                        "r": r, "sigma": sigma_implied,
+                        "option_type": o["option_type"], "quantity": qty,
+                    })
+                port_g = portfolio_greeks(all_pos, contract_size)
+
                 for opt in options:
                     T_remaining = (opt["T_days"] / 252) - (day / 252) - (step / (252 * spd))
                     if T_remaining <= 0:
@@ -80,19 +94,6 @@ class BacktestEngine:
 
                     leg_pos = abs(inventory.get_option_position(opt["K"], T_remaining, opt["option_type"]))
 
-                    all_pos = []
-                    for o in options:
-                        T_o = (o["T_days"] / 252) - (day / 252) - (step / (252 * spd))
-                        if T_o <= 0:
-                            continue
-                        qty = inventory.get_option_position(o["K"], T_o, o["option_type"])
-                        all_pos.append({
-                            "S": S_stale, "K": o["K"], "T": T_o,
-                            "r": r, "sigma": sigma_implied,
-                            "option_type": o["option_type"], "quantity": qty,
-                        })
-
-                    port_g = portfolio_greeks(all_pos, contract_size)
                     size = risk.adjusted_quote_size(
                         desired_size=bt["desired_quote_size"],
                         portfolio_gamma=port_g["gamma"],
