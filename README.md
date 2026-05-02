@@ -42,6 +42,8 @@ src/
     engine.py         ← main simulation loop (30 days × 78 steps)
     report.py         ← summary table + 5-panel matplotlib visualization
     data.py           ← yfinance SPY IV surface loader + Heston calibration
+    multi_seed.py     ← 20-seed aggregate statistics → results/multi_seed.csv
+    sensitivity.py    ← 27-combo parameter grid search → results/sensitivity.csv
 
 tests/               ← 66 pytest tests (run: pytest tests/ -v)
 run_backtest.py      ← entry point
@@ -53,9 +55,10 @@ run_backtest.py      ← entry point
 
 ```bash
 pip install numpy scipy pandas matplotlib pytest yfinance
-pytest tests/ -v                    # 66 tests, all should pass
-python3 run_backtest.py             # 30-day simulation, saves backtest_results.png
-python3 src/backtest/sensitivity.py # parameter grid search, saves results/sensitivity.csv
+pytest tests/ -v                       # 66 tests, all should pass
+python3 run_backtest.py                # 30-day simulation, saves backtest_results.png
+python3 src/backtest/multi_seed.py     # 20-seed stats, saves results/multi_seed.csv
+python3 src/backtest/sensitivity.py    # parameter grid search, saves results/sensitivity.csv
 ```
 
 ---
@@ -174,11 +177,17 @@ Daily P&L decomposes into five economic components:
 
 The accounting identity `components + residual ≡ mtm_pnl` holds to machine precision. Adding vanna and volga reduces the residual from ~88% (first-order only) to ~22% — the remaining residual reflects third-order effects and discrete-hedging approximation error.
 
+**Why vega/vanna/volga use EOD net moves, not intraday accumulation:**
+
+Theta and gamma are accumulated step-by-step because their P&L depends on the realized price path (actual log-returns and variance). Vega, vanna, and volga use the net SOD→EOD sigma change only. The reason: `sigma_implied` is estimated from a 10-step rolling log-return window. With only 10 samples, step-to-step changes in this estimator are large and noisy — they reflect sampling variance in a tiny window, not actual changes in implied vol. Summing `½ × volga × Δσ_step²` across 78 steps accumulates estimator noise squared, producing a spurious term (~10× the daily MTM P&L) with no relation to the actual book mark. The MTM book is repriced only at SOD and EOD, so only the net `σ_EOD − σ_SOD` move propagates to realized P&L. The intraday oscillations cancel in the book mark. The 21.67% residual is therefore a floor given this vol estimator — not an implementation gap.
+
 MTM P&L is `(EOD book value − SOD book value) + realized P&L from closes + underlying position P&L`, where book value = BS price × quantity × 100.
 
 ---
 
 ## Performance Metrics
+
+Single run (seed=42, default params):
 
 | Metric | Value |
 |--------|-------|
@@ -186,6 +195,27 @@ MTM P&L is `(EOD book value − SOD book value) + realized P&L from closes + und
 | Sharpe Ratio (annualized) | 1.849 |
 | Win Rate | 46.7% of days |
 | Max Drawdown | $35,111.78 |
+
+### Multi-Seed Analysis (20 seeds, default params)
+
+```bash
+python3 src/backtest/multi_seed.py   # saves results/multi_seed.csv
+```
+
+Running the same default configuration across seeds 0–19 reveals high outcome variance driven by Heston vol-of-vol clustering over a short 30-day window:
+
+| Metric | Value |
+|--------|-------|
+| Median Sharpe | 1.223 |
+| Mean Sharpe | −0.144 |
+| Std Sharpe | 3.072 |
+| Min Sharpe | −5.146 (seed 4) |
+| Max Sharpe | 4.506 (seed 15) |
+| Median Win Rate | 50.0% |
+| Median Max Drawdown | $45,797 |
+| Median Total P&L | $23,414 |
+
+The mean Sharpe (−0.14) is dragged negative by a few catastrophic seeds where a single vol spike triggers large adverse-selection losses before the hedger can respond. The median (1.22) is more representative of the typical run. The seed=42 result (Sharpe 1.849) sits near the 75th percentile. The 30-day window is short enough that path-dependent vol clustering dominates parameter skill.
 
 ---
 

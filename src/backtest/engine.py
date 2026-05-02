@@ -200,13 +200,13 @@ class BacktestEngine:
             port_eod = portfolio_greeks(eod_pos, contract_size)
             daily_vega_pnl = port_eod["vega"] * delta_sigma
 
-            # Volga P&L: use EOD portfolio greeks and net (SOD→EOD) sigma change squared
-            # MTM book only reflects the net sigma change, not intraday oscillations
+            # Vanna and volga: use EOD Greeks and net daily moves
+            # Rolling-window sigma is too noisy intraday — step-by-step Δσ² sums to
+            # estimator noise rather than economic vol changes. EOD net moves match
+            # what the MTM book actually reflects.
             delta_S = S_eod - S_sod
-            daily_volga_pnl = 0.5 * port_eod["volga"] * delta_sigma ** 2
-            # Vanna P&L: overwrite intraday sum with EOD-based net move
-            # (consistent with how vega and volga are computed from net daily moves)
             daily_vanna_pnl = port_eod["vanna"] * delta_S * delta_sigma
+            daily_volga_pnl = 0.5 * port_eod["volga"] * delta_sigma ** 2
 
             # Build attribution dict using intraday-accumulated Greek P&L components
             spread_capture = sum(
