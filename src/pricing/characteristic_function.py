@@ -70,3 +70,59 @@ def heston_price(S: float, K: float, T: float, r: float,
         return float(call)
     # Put via put-call parity (avoids second integration)
     return float(call - (S - K * np.exp(-r * T)))
+
+
+def heston_price_grid(S: float, strikes: np.ndarray, T: float, r: float,
+                      v0: float, kappa: float, theta: float, xi: float,
+                      rho: float) -> np.ndarray:
+    """
+    Price European calls across a full strike grid under Heston using Carr-Madan FFT.
+
+    Returns call prices. Convert to puts via: put = call - (S - K*exp(-rT)).
+
+    Args:
+        S: Spot price
+        strikes: 1-D array of strike prices
+        T: Time to maturity in years
+        r: Risk-free rate
+        v0, kappa, theta, xi, rho: Heston parameters (same as heston_price)
+
+    Returns:
+        1-D numpy array of call prices, same length as strikes.
+    """
+    from scipy.interpolate import CubicSpline
+
+    strikes = np.asarray(strikes, dtype=float)
+    N     = 4096
+    eta   = 0.25
+    alpha = 1.5
+    lam   = 2 * np.pi / (N * eta)
+    b     = N * lam / 2
+
+    j   = np.arange(N)
+    u_j = j * eta
+
+    denom = alpha**2 + alpha - u_j**2 + 1j * (2 * alpha + 1) * u_j
+    phi_u = _heston_cf(u_j - 1j * (alpha + 1), S, T, r, v0, kappa, theta, xi, rho)
+    psi   = np.exp(-r * T) * phi_u / denom
+
+    w      = np.ones(N)
+    w[1::2] = 4
+    w[2::2] = 2
+    w[-1]   = 1
+    w      *= eta / 3
+
+    x       = np.exp(-1j * b * u_j) * psi * w
+    fft_out = np.real(np.fft.fft(x))
+
+    k_m    = -b + j * lam
+    call_m = np.exp(-alpha * k_m) / np.pi * fft_out
+
+    ln_strikes = np.log(strikes)
+    cs    = CubicSpline(k_m, call_m)
+    calls = cs(ln_strikes)
+
+    # Call price lower bound: max(S - K*exp(-rT), 0) — clip numerical negatives
+    lower = np.maximum(S - strikes * np.exp(-r * T), 0.0)
+    calls = np.maximum(calls, lower)
+    return calls
