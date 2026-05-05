@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from scipy.optimize import brentq
 from src.pricing.black_scholes import bs_price
 from src.pricing.characteristic_function import heston_price
@@ -41,8 +40,9 @@ def test_vol_smile_negative_skew():
     T_yr = 1.0
 
     def implied_vol(price, K_iv, otype):
-        f = lambda s: bs_price(S, K_iv, T_yr, r, s, otype) - price
-        return brentq(f, 0.001, 5.0, xtol=1e-8)
+        def obj(s):
+            return bs_price(S, K_iv, T_yr, r, s, otype) - price
+        return brentq(obj, 0.001, 5.0, xtol=1e-8)
 
     call_atm  = heston_price(S, S * 1.00, T_yr, r, **HESTON, option_type="call")
     call_otmc = heston_price(S, S * 1.15, T_yr, r, **HESTON, option_type="call")

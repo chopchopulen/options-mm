@@ -1,5 +1,5 @@
 import numpy as np
-from scipy import integrate, optimize
+from scipy import integrate
 
 
 def _heston_cf(u, S, T, r, v0, kappa, theta, xi, rho):
