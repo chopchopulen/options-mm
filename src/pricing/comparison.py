@@ -15,12 +15,11 @@ if _root not in sys.path:
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.optimize import brentq
 
 from src.pricing.black_scholes import bs_price
 from src.pricing.binomial import binomial_price
 from src.pricing.monte_carlo import mc_price
-from src.pricing.characteristic_function import heston_price, heston_price_grid
+from src.pricing.characteristic_function import heston_price_grid
 
 S        = 100.0
 r        = 0.05
