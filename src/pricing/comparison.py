@@ -15,11 +15,12 @@ if _root not in sys.path:
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy.optimize import brentq
 
 from src.pricing.black_scholes import bs_price
 from src.pricing.binomial import binomial_price
 from src.pricing.monte_carlo import mc_price
-from src.pricing.characteristic_function import heston_price_grid
+from src.pricing.characteristic_function import heston_price, heston_price_grid
 
 S        = 100.0
 r        = 0.05
@@ -112,6 +113,53 @@ def plot_comparison(df: pd.DataFrame, out_path: str) -> None:
             sign = "+" if diff >= 0 else ""
             ax.text(0, prices[0] + 0.02, f"{sign}{diff:.2f}", ha="center", fontsize=7,
                     color="darkorange" if abs(diff) > 0.05 else "black")
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Saved {out_path}")
+
+
+def plot_vol_skew(out_path: str) -> None:
+    """
+    Plot 2: Implied vol smile extracted from Heston-CF prices.
+    Three lines for 30d, 60d, 90d expiries.
+    Horizontal dashed line at flat BS vol (0.20).
+
+    Black-Scholes assumes flat vol across strikes. Heston-CF reveals the true
+    implied vol smile: OTM puts carry higher IV due to negative spot-vol correlation
+    (rho=-0.7) — exactly the skew observed in real equity options markets.
+    """
+    strike_pcts = STRIKES / S * 100
+    colors = ["steelblue", "darkorange", "forestgreen"]
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.axhline(SIGMA_BS, color="gray", linestyle="--", linewidth=1.2,
+               label=f"BS flat vol ({SIGMA_BS:.0%})")
+
+    for color, T_days in zip(colors, EXPIRIES):
+        T_yr     = T_days / TRADING_DAYS
+        cf_calls = heston_price_grid(S, STRIKES, T_yr, r, **HESTON)
+        ivs = []
+        for K, cf_call in zip(STRIKES, cf_calls):
+            try:
+                iv = brentq(
+                    lambda s, K_=K, p_=float(cf_call): bs_price(S, K_, T_yr, r, s, "call") - p_,
+                    0.001, 5.0, xtol=1e-8
+                )
+            except ValueError:
+                iv = np.nan
+            ivs.append(iv)
+
+        ax.plot(strike_pcts, ivs, marker="o", color=color, label=f"{T_days}d")
+
+    ax.set_xlabel("Strike (% of spot)")
+    ax.set_ylabel("Implied Volatility")
+    ax.set_title("Heston-CF Implied Vol Smile vs. BS Flat Vol\n"
+                 r"$\rho=-0.7$: negative skew — OTM puts more expensive than BS predicts")
+    ax.legend()
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{y:.1%}"))
+    ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
