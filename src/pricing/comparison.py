@@ -165,3 +165,64 @@ def plot_vol_skew(out_path: str) -> None:
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved {out_path}")
+
+
+def plot_convergence(out_path: str) -> None:
+    """
+    Plot 3: MC convergence to Heston-CF benchmark at ATM (S=K=100, T=60/252).
+    Each point = mean absolute error over 20 seeds.
+    Two lines: standard MC and antithetic MC.
+    O(1/sqrt(N)) reference line anchored at standard MC first point.
+    """
+    T_yr      = 60 / TRADING_DAYS
+    K_atm     = 100.0
+    benchmark = heston_price(S, K_atm, T_yr, r, **HESTON, option_type="call")
+    print(f"  Heston-CF benchmark (ATM, 60d call): {benchmark:.6f}")
+
+    n_paths_list = [100, 500, 1_000, 5_000, 10_000, 50_000]
+    n_seeds      = 20
+
+    mae_std  = []
+    mae_anti = []
+
+    for n_paths in n_paths_list:
+        errors_std  = []
+        errors_anti = []
+        for seed in range(n_seeds):
+            rng = np.random.default_rng(seed)
+            p_std  = mc_price(S, K_atm, T_yr, r, SIGMA_BS, "call",
+                              n_paths=n_paths, rng=rng, antithetic=False)
+            rng = np.random.default_rng(seed)
+            p_anti = mc_price(S, K_atm, T_yr, r, SIGMA_BS, "call",
+                              n_paths=n_paths, rng=rng, antithetic=True)
+            errors_std.append(abs(p_std  - benchmark))
+            errors_anti.append(abs(p_anti - benchmark))
+        mae_std.append(np.mean(errors_std))
+        mae_anti.append(np.mean(errors_anti))
+        print(f"  N={n_paths:6d}: std MAE={mae_std[-1]:.4f}  anti MAE={mae_anti[-1]:.4f}")
+
+    # O(1/sqrt(N)) reference anchored at standard MC first point
+    ns  = np.array(n_paths_list, dtype=float)
+    ref = mae_std[0] * np.sqrt(n_paths_list[0] / ns)
+
+    # Log-log slope for standard MC
+    log_n  = np.log(ns)
+    log_e  = np.log(np.array(mae_std))
+    slope, _ = np.polyfit(log_n, log_e, 1)
+    print(f"  Standard MC log-log convergence slope: {slope:.3f} (theory: -0.500)")
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.loglog(ns, mae_std,  "o-", color="steelblue",  label="Standard MC")
+    ax.loglog(ns, mae_anti, "s-", color="darkorange", label="Antithetic MC")
+    ax.loglog(ns, ref,      "--", color="gray",        label=r"$O(1/\sqrt{N})$")
+    ax.set_xlabel("Number of MC Paths")
+    ax.set_ylabel("Mean Absolute Error vs. Heston-CF")
+    ax.set_title(f"MC Convergence to Heston-CF Benchmark (ATM 60d Call)\n"
+                 f"Standard MC slope: {slope:.3f} (theory −0.500), 20 seeds each")
+    ax.legend()
+    ax.grid(True, which="both", alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Saved {out_path}")
