@@ -226,3 +226,55 @@ def plot_convergence(out_path: str) -> None:
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved {out_path}")
+
+
+def run_all() -> None:
+    out_dir = Path(_root) / "results"
+    out_dir.mkdir(exist_ok=True)
+
+    print("Building comparison DataFrame (27 grid points)...")
+    df = build_comparison_df()
+    csv_path = str(out_dir / "pricing_comparison.csv")
+    df.to_csv(csv_path, index=False)
+    print(f"Saved {csv_path}")
+
+    max_bs_cf = df["bs_vs_cf"].abs().max()
+    print(f"  Max |BS − CF| across grid: {max_bs_cf:.4f}")
+
+    print("\nGenerating Plot 1: grouped bar chart...")
+    plot_comparison(df, str(out_dir / "pricing_comparison.png"))
+
+    print("\nGenerating Plot 2: vol skew...")
+    plot_vol_skew(str(out_dir / "vol_skew.png"))
+
+    print("\nGenerating Plot 3: MC convergence...")
+    plot_convergence(str(out_dir / "convergence.png"))
+
+    print("\n" + "=" * 55)
+    print("HESTON CF vs BS COMPARISON SUMMARY")
+    print("=" * 55)
+    print(f"  Max |BS − CF| (all 27 points): ${max_bs_cf:.4f}")
+    bs_cf_by_expiry = df.groupby("expiry_days")["bs_vs_cf"].apply(lambda x: x.abs().max())
+    for T_days, v in bs_cf_by_expiry.items():
+        print(f"    {T_days}d max |BS − CF|: ${v:.4f}")
+
+    print("\n  Vol smile range (Heston-CF, 30d):")
+    df_30 = df[df["expiry_days"] == 30].copy()
+    for _, row in df_30.iterrows():
+        T_yr    = row["T_years"]
+        K       = row["K"]
+        cf_call = row["heston_cf_price"] if row["option_type"] == "call" \
+                  else row["heston_cf_price"] + (S - K * np.exp(-r * T_yr))
+        try:
+            iv = brentq(
+                lambda s, K_=K, p_=cf_call: bs_price(S, K_, T_yr, r, s, "call") - p_,
+                0.001, 5.0
+            )
+        except ValueError:
+            iv = float("nan")
+        print(f"    K={row['strike_pct']:.0f}%: IV={iv:.1%}")
+    print("=" * 55)
+
+
+if __name__ == "__main__":
+    run_all()
