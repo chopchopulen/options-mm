@@ -1,6 +1,7 @@
 import numpy as np
 from src.market.underlying import HestonSimulator
 from src.market.order_flow import OrderFlowSimulator
+from src.market.competition import CompetitiveQuotes
 from src.pricing.black_scholes import bs_price
 from src.greeks.analytical import delta, gamma, vega
 from src.greeks.portfolio import portfolio_greeks
@@ -82,6 +83,11 @@ class BacktestEngine:
             S_ref=H["S0"], r=r, v0=H["v0"], kappa=H["kappa"],
             theta=H["theta"], xi=H["xi"], rho=H["rho"],
         )
+
+        # Competing quotes, sampled from real observed SPY spreads. Off unless a cached
+        # chain exists; never silently falls back to an invented competitive level.
+        competition = CompetitiveQuotes.from_cache() if bt.get("use_competition", False) else None
+        comp_rng    = np.random.default_rng(self.seed + 2)
 
         flow_sim  = OrderFlowSimulator(**self.cfg.ORDER_FLOW, seed=self.seed + 1)
         # Inventory holding horizon tau: the expected wait for a trade, derived from the
@@ -213,6 +219,17 @@ class BacktestEngine:
                         current_leg_position=leg_pos,
                     )
                     if bid_size == 0 and ask_size == 0:
+                        continue
+
+                    # Competition gates ALL flow -- informed and noise alike -- because a
+                    # counterparty takes the best price available regardless of why it is
+                    # trading. T_remaining is in trading-year units; the empirical buckets
+                    # are in calendar days.
+                    if competition is not None and not competition.wins_flow(
+                        own_half_spread=ask - fair, premium=fair,
+                        moneyness=opt["K"] / S_stale,
+                        days_to_exp=T_remaining * 365.0, rng=comp_rng,
+                    ):
                         continue
 
                     bid, ask = quoter.quote(fair, g, v_greek, d_greek, S_stale, sig_leg)

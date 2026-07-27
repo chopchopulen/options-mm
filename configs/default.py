@@ -118,4 +118,15 @@ BACKTEST = dict(
     # width and its LEVEL is not identified. Neither setting yields a claimable P&L
     # figure — see docs/FINAL_NUMBERS.md.
     use_reservation_price=False,
+
+    # Competing quotes (audit ITEM 18). DEFAULT OFF -- requires a real cached SPY chain
+    # at data/spy_surface.csv, produced during market hours by
+    #     python3 -m src.backtest.data
+    # Without competition, fill probability does not depend on quote width at all and
+    # P&L is unbounded and linear in the spread we choose: measured, a 16x sweep of
+    # base_spread produced 5,335 fills at EVERY width. Competition is what identifies the
+    # P&L LEVEL. The competing half-spread is SAMPLED FROM REAL OBSERVED SPY QUOTES rather
+    # than assumed, so the competitive level is measured, not chosen -- otherwise this
+    # model would reintroduce the same free parameter one layer deeper.
+    use_competition=False,
 )
