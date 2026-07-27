@@ -100,4 +100,22 @@ BACKTEST = dict(
     default_sigma=0.20,
     risk_free_rate=0.02,
     desired_quote_size=5,
+    # Counterparty reservation price for noise flow (audit ITEM 13, ITEM8 option B).
+    # DEFAULT OFF. The code and the finding are kept, but the default configuration must
+    # not be one identified as an artifact.
+    #
+    # Why it is off: the reservation SCALE is anchored to the market maker's inventory
+    # horizon tau, and that is circular — lambda_noise sets tau = steps_per_day/lambda,
+    # and tau sets the scale — so adding flow simultaneously tightens every
+    # counterparty's reservation price. At the derived spread this gives an ATM fill
+    # probability of exp(-4.32) = 1.33%, screening out 99% of BENIGN flow while informed
+    # flow is gated separately on edge > half_spread. Adverse selection roughly triples
+    # as a result. Counterparty behaviour should not be anchored to the maker's holding
+    # horizon; they are different quantities and only one belongs to the counterparty.
+    #
+    # Turning this ON makes fill probability respond to quote width, which is the only
+    # mechanism here that bounds P&L in width at all. With it OFF, P&L is unbounded in
+    # width and its LEVEL is not identified. Neither setting yields a claimable P&L
+    # figure — see docs/FINAL_NUMBERS.md.
+    use_reservation_price=False,
 )

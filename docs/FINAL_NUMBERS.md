@@ -38,28 +38,54 @@ percentage drawdown is likewise undefinable here for the same reason.
 
 Numbers that can be stated, with what was measured and the caveat each must carry.
 
-### Current model state
+### ⛔ The P&L level is NOT claimable, in either configuration
 
-| metric | value | measured on | caveat it must carry |
-|---|---:|---|---|
-| median total P&L | **−$1,179,948** | seeds 0–19, ex day 0 | Dominated by an assumed reservation-price scale that is almost certainly too tight (p_fill ≈ 1.3%). Not a measurement of strategy quality. |
-| median Sharpe* | **−43.537** | seeds 0–19, ex day 0 | Not a Sharpe ratio — see above. Also inherits the caveat directly above. |
-| seeds with positive P&L | **0/20** | seeds 0–19, ex day 0 | Same. |
-| median residual / gross flow | **2.59%** | seeds 0–19, ex day 0 | This one is solid. The attribution identity closes and explains 97.4% of gross flow. |
+**This is the terminal finding of the exercise, and it is a result, not a failure.**
 
-### Attribution, current state (medians, seeds 0–19, ex day 0)
+> **With no competition model, this simulator's P&L LEVEL is not identified.**
+
+There are two configurations, and neither yields a claimable performance number:
+
+| configuration | median P&L | median Sharpe* | why it is NOT claimable |
+|---|---:|---:|---|
+| **`use_reservation_price=False`** (repo default) | +$290,930 | +9.752 | **Unbounded in width, level not identified.** Noise flow is perfectly inelastic, so P&L rises monotonically with quote width. The level is a function of a width *we chose*, not of anything the model determines. Quote wider and it goes up, without limit. |
+| **`use_reservation_price=True`** (ITEM 13) | −$1,132,830 | −42.342 | **Artifact of the mis-anchored reservation scale.** p_fill ≈ 1.33% at the derived spread — 99% of benign flow screened out — because the scale is anchored to the market maker's own inventory horizon τ, which is circular (λ sets τ sets the scale). |
+
+The default is set to `False` because the repo's default configuration must not be one
+identified as an artifact — **not** because that configuration is more trustworthy. It is
+unbounded rather than wrong, which is a different defect, not a smaller one.
+
+Do not quote either P&L figure, either Sharpe*, or the positive-seed counts (19/20 and 0/20
+respectively) as a performance result. Both are recorded in RETIRED for that reason.
+
+### What IS claimable
+
+Everything below is robust to the calibration question above.
+
+| claim | value | measured on |
+|---|---|---|
+| **The attribution identity closes.** | residual median **2.50%** of gross flow; per-seed range 0.05%–6.90%; medians across the fix sequence ranged 1.42%–3.01% | seeds 0–19, ex day 0, verified closing on **all 20 seeds** in both configurations |
+| **The backtest is bit-reproducible.** | byte-identical daily P&L, attribution and price path across separate processes | seed 42, re-verified after every commit |
+| **The pricing and Greeks core is clean.** | see table below | multiple grids |
+| **The derived adverse-selection share matches the measured one, independently.** | derived **0.8868** from the Heston dynamics and arrival model; measured **~89%** from fill counts | two independent routes, no shared inputs |
+| **Fill probability was completely independent of quote width.** | **5,335 fills / 19,388 contracts at every width** across a 16× sweep, identical to the unit | seed 42 |
+| **The half-spread derivation carries no fitted coefficient.** | 1.13%–3.17% of premium across the six legs | analytic, at σ=0.20 |
+
+### Attribution, default configuration (medians, seeds 0–19, ex day 0)
+
+Shape and sign are informative; the **levels inherit the identification problem above.**
 
 | component | value | caveat |
 |---|---:|---|
-| `spread_capture` | +$431,914 | Gross quoted spread, measured against quote-time fair. Must be read together with `adverse_selection`; their **sum** is the edge against contemporaneous fair. |
-| `adverse_selection` | −$1,021,235 | Applies to informed flow. Inflated by the reservation gate screening out benign flow while toxic flow is unaffected. |
-| `hedge_cost` | −$598,193 | **100% an artifact of `transaction_cost=0.001`** (10bps/hedge), which is 20–100× realistic institutional SPY execution. Never corrected — see OPEN. |
-| `theta_pnl` | +$540 | |
-| `gamma_pnl` | −$248 | |
-| `vega_pnl` | +$3,170 | |
-| `vanna_pnl` | −$244 | |
-| `volga_pnl` | −$5,404 | |
-| `residual` | −$10,210 | 2.59% of gross. |
+| `spread_capture` | +$1,219,681 | Gross quoted spread, measured against quote-time fair. Must be read together with `adverse_selection`; their **sum** is the edge against contemporaneous fair. Level is a function of the chosen quote width. |
+| `adverse_selection` | −$380,191 | Applies to informed flow only. Under `use_reservation_price=True` this roughly triples, to −$1,021,235 — see the gating asymmetry in OPEN. |
+| `hedge_cost` | −$525,702 | **100% an artifact of `transaction_cost=0.001`** (10bps/hedge), which is 20–100× realistic institutional SPY execution. Never corrected — see OPEN. |
+| `theta_pnl` | +$80 | |
+| `gamma_pnl` | +$9 | |
+| `vega_pnl` | +$12,407 | |
+| `vanna_pnl` | −$637 | |
+| `volga_pnl` | −$1,580 | |
+| `residual` | +$12,527 | 2.50% of gross. |
 
 ### Reproducibility — claimable without qualification
 
@@ -126,6 +152,8 @@ Numbers that were previously reported and **must not be quoted again**.
 | **P&L +$103,675 / Sharpe\* +6.38** (post-ITEM 10) | Superseded: fill probability was still independent of quote width. |
 | **P&L +$33,955 / Sharpe\* +2.34** (post-ITEM 11) | Superseded: noise flow still perfectly inelastic; 79.7% informed share. |
 | **P&L +$290,930 / Sharpe\* +9.75** (post-ITEM 12) | Superseded by ITEM 13. Also the most flattering intermediate figure, produced by the two changes that push P&L up. |
+| **P&L +$290,930 / Sharpe\* +9.75** (default config, `use_reservation_price=False`) | Not a performance result. Unbounded in quote width — noise flow is inelastic, so the level is a function of a width we chose. |
+| **P&L −$1,132,830 / Sharpe\* −42.34** (`use_reservation_price=True`) | Not a performance result. Artifact of the mis-anchored reservation scale (p_fill ≈ 1.33%). |
 | Any single-seed comparison | 20-seed Sharpe* at baseline had mean −0.14 and std 3.07. A ±1 move on one seed is noise. |
 
 ---
@@ -134,18 +162,19 @@ Numbers that were previously reported and **must not be quoted again**.
 
 | # | Limitation | Consequence |
 |---|---|---|
-| 1 | **Reservation-price scale is almost certainly too tight.** Anchored to the MM's inventory horizon τ, giving p_fill ≈ **1.33%** at the derived ATM spread. | The current −$1.18M median is an artifact of this assumption. **This is the single biggest open item.** There is a circularity: `λ` sets `τ = spd/λ`, and `τ` sets the reservation scale, so adding flow simultaneously tightens every counterparty's reservation price. Counterparty behaviour should not be anchored to the market maker's holding horizon. |
-| 2 | **No competition model.** No competing quotes, no queue, no NBBO reference. | Option C from `audit/ITEM8_FILL_MODEL.md` is unimplemented. The MM is a monopolist facing price-taking flow. |
-| 3 | **Hedge cost is 100% a 10bps assumption.** `transaction_cost=0.001` × $29.85M notional reproduced the reported hedge cost to the cent. 20–100× realistic institutional SPY execution. | −$598,193 of the current median P&L is this assumption. Never corrected — it was flagged as a realism finding, not a bug, and the decision was deferred. |
-| 4 | **Informed traders are profitable 100% by construction.** They observe the contemporaneous fair exactly and are gated on `edge > half_spread`. | There is no informed trader who is *wrong*. Real informed flow has a noisy signal. Adverse selection is therefore an upper bound. |
-| 5 | **Flat implied-vol surface.** One `sigma_implied` for all strikes and expiries, from a 10-sample rolling realized-vol window. | No skew, no term structure. The MM cannot be picked off on relative value, and every vol-Greek term attributes estimator noise. `sigma_uncertainty_window=10` is small enough that step-by-step vol attribution is unusable — the EOD basis is a workaround, not a fix. |
-| 6 | **No inventory skew.** `Quoter.quote` returns `fair ± hs` and is never passed the position. | Nothing pulls the book toward flat except the directional size throttle. `test_symmetric_around_fair` pins this as *current* behaviour, not desired. |
-| 7 | **Single underlying, single vol regime.** One Heston path family, one parameter set, 30 days. | No regime shifts, no cross-asset effects, no earnings/event risk. |
-| 8 | **No position aging or expiry handling.** Legs are 30d/60d and the run is 30 days; positions near expiry are simply skipped when `T ≤ 0`. | No pin risk, no assignment, no roll. |
-| 9 | **Greek caps are redundant with the position limit** for this universe (set at 100% of declared capacity). | Not redundant in principle — a longer-dated or larger book would push per-contract vega up until they bind first. A genuinely binding aggregate cap needs a capital base, which does not exist. |
-| 10 | **Intra-step risk-limit overshoot (latent).** `port_g` is computed once per step; six legs then quote against it. Portfolio \|vega\| reached 3.27× its cap pre-fix. | Bounded by the per-leg cap in practice, but the mechanism is still there. |
-| 11 | **`src/pnl/attribution.py` is dead code.** The engine inlines its own attribution. | Four tests still exercise the module that never runs. |
-| 12 | **30 observations, one path per seed.** | A defensible Sharpe interval needs ~153 independent 30-day paths (≈18 years). ~88% of across-seed variance is 30-observation estimation noise, not strategy variability. **Longer paths, not more seeds.** |
+| 1 | **Reservation-price scale is almost certainly too tight.** Anchored to the MM's inventory horizon τ, giving p_fill ≈ **1.33%** at the derived ATM spread. | Gated OFF by default for this reason. When enabled it produces a −$1,132,830 median that is an artifact of the assumption, not a measurement. **This is the single biggest open item**, because it is the only mechanism here that bounds P&L in quote width at all — without it the level is unidentified. There is a circularity: `λ` sets `τ = spd/λ`, and `τ` sets the reservation scale, so adding flow simultaneously tightens every counterparty's reservation price. Counterparty behaviour should not be anchored to the market maker's holding horizon. |
+| 2 | **Gating asymmetry between the two counterparty populations.** Noise traders face a *probabilistic* reservation gate (`p_fill = exp(-cost/scale)`); informed traders face a *deterministic* one (`edge > half_spread`). | Non-commensurate screens. This is the mechanism behind adverse selection roughly TRIPLING under ITEM 13 (−$380,191 → −$1,021,235): the probabilistic gate removes benign flow stochastically while the deterministic gate leaves toxic flow that clears its threshold entirely intact. Any future fix must gate both populations on comparable terms — either both probabilistic or both deterministic — or the flow mix is distorted by the screening itself, independently of any calibration. |
+| 3 | **No competition model.** No competing quotes, no queue, no NBBO reference. | Option C from `audit/ITEM8_FILL_MODEL.md` is unimplemented. The MM is a monopolist facing price-taking flow. |
+| 4 | **Hedge cost is 100% a 10bps assumption.** `transaction_cost=0.001` × $29.85M notional reproduced the reported hedge cost to the cent. 20–100× realistic institutional SPY execution. | −$525,702 of the default-configuration median P&L is this assumption. Never corrected — it was flagged as a realism finding, not a bug, and the decision was deferred. |
+| 5 | **Informed traders are profitable 100% by construction.** They observe the contemporaneous fair exactly and are gated on `edge > half_spread`. | There is no informed trader who is *wrong*. Real informed flow has a noisy signal. Adverse selection is therefore an upper bound. |
+| 6 | **Flat implied-vol surface.** One `sigma_implied` for all strikes and expiries, from a 10-sample rolling realized-vol window. | No skew, no term structure. The MM cannot be picked off on relative value, and every vol-Greek term attributes estimator noise. `sigma_uncertainty_window=10` is small enough that step-by-step vol attribution is unusable — the EOD basis is a workaround, not a fix. |
+| 7 | **No inventory skew.** `Quoter.quote` returns `fair ± hs` and is never passed the position. | Nothing pulls the book toward flat except the directional size throttle. `test_symmetric_around_fair` pins this as *current* behaviour, not desired. |
+| 8 | **Single underlying, single vol regime.** One Heston path family, one parameter set, 30 days. | No regime shifts, no cross-asset effects, no earnings/event risk. |
+| 9 | **No position aging or expiry handling.** Legs are 30d/60d and the run is 30 days; positions near expiry are simply skipped when `T ≤ 0`. | No pin risk, no assignment, no roll. |
+| 10 | **Greek caps are redundant with the position limit** for this universe (set at 100% of declared capacity). | Not redundant in principle — a longer-dated or larger book would push per-contract vega up until they bind first. A genuinely binding aggregate cap needs a capital base, which does not exist. |
+| 11 | **Intra-step risk-limit overshoot (latent).** `port_g` is computed once per step; six legs then quote against it. Portfolio \|vega\| reached 3.27× its cap pre-fix. | Bounded by the per-leg cap in practice, but the mechanism is still there. |
+| 12 | **`src/pnl/attribution.py` is dead code.** The engine inlines its own attribution. | Four tests still exercise the module that never runs. |
+| 13 | **30 observations, one path per seed.** | A defensible Sharpe interval needs ~153 independent 30-day paths (≈18 years). ~88% of across-seed variance is 30-observation estimation noise, not strategy variability. **Longer paths, not more seeds.** |
 
 ---
 
@@ -202,8 +231,10 @@ volatility-initialization artifact, and the statistic is not a Sharpe ratio beca
 base exists. Twenty defects were found; a green 70-test suite detected none of them, because
 the load-bearing test was a tautology. The pricing and Greeks core audited clean throughout —
 **the failures were all in accounting, risk limits, and the market model.** The simulator now
-has a closing attribution identity (residual 2.59% of gross), a spread derived from carry cost
-and Glosten-Milgrom break-even with no fitted coefficients, and fill probability that responds
-to quote width. It does not yet have a defensible P&L number, and the current −$1.18M is
-dominated by one asserted behavioural parameter that is probably too tight. **That is the next
-thing to fix, and until it is, no P&L figure from this project should be quoted as a result.**
+has a closing attribution identity (residual 2.50% of gross), a spread derived from carry cost
+and Glosten-Milgrom break-even with no fitted coefficients, and an optional fill model that
+responds to quote width. It does not have an identified P&L LEVEL, and that is the terminal finding rather than a loose
+end: with noise flow inelastic the level is unbounded in a quote width we choose, and the one
+mechanism that bounds it rests on a behavioural scale anchored to the wrong quantity. **Fixing
+that requires a competition model. Until there is one, no P&L figure from this project should be
+quoted as a result — in either configuration.**
