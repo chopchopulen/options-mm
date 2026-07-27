@@ -35,8 +35,23 @@ HEDGER = dict(
 )
 
 RISK = dict(
-    max_gamma=800.0,
-    max_vega=50000.0,
+    # Greek caps are DERIVED from max_contracts_per_leg, not chosen independently.
+    # The book's declared capacity is 20 contracts x 6 legs = 120 contracts. At
+    # sigma=0.20 the six legs carry, per contract (vega/gamma x contract_size=100):
+    #   427.5 30d put  4453.4 / 0.924      450.0 30d call 6179.4 / 1.282
+    #   450.0 30d put  6179.4 / 1.282      472.5 30d call 5053.4 / 1.048
+    #   427.5 60d put  7213.8 / 0.748      450.0 60d call 8718.3 / 0.904
+    #   sum over legs  37797.8 / 6.187
+    # A full book at declared capacity therefore carries |vega| 755,957 and
+    # |gamma| 123.7. The previous values were mutually inconsistent by ~100x:
+    # max_vega=50,000 bound at 6.6% of declared capacity while max_gamma=800
+    # bound at 646% of it, so vega refused quotes the position limit permitted
+    # and gamma never bound at all.
+    # Cross-check: Heston xi=0.30 implies a 1-day 1-sigma move of 0.94 vol points,
+    # costing a full-capacity book $7,143 in vega, and a 5.67-point spot move
+    # costing $1,988 in gamma. Both are coherent magnitudes for this book.
+    max_gamma=124.0,
+    max_vega=756000.0,
     max_contracts_per_leg=20,
 )
 
