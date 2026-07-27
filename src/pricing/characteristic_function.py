@@ -66,10 +66,13 @@ def heston_price(S: float, K: float, T: float, r: float,
     P2 = 0.5 + 1 / np.pi * integrate.quad(integrand_P2, 1e-10, 500, limit=500, epsabs=1e-9)[0]
 
     call = np.exp(-r * T) * (F * P1 - K * P2)
+    # Clip to the no-arbitrage lower bound. Quadrature can return small negatives deep
+    # OTM; heston_price_grid already clips and this keeps the two routes consistent.
+    call = max(float(call), max(S - K * np.exp(-r * T), 0.0))
     if option_type == "call":
-        return float(call)
+        return call
     # Put via put-call parity (avoids second integration)
-    return float(call - (S - K * np.exp(-r * T)))
+    return max(call - (S - K * np.exp(-r * T)), 0.0)
 
 
 def heston_price_grid(S: float, strikes: np.ndarray, T: float, r: float,

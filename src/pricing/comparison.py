@@ -169,15 +169,24 @@ def plot_vol_skew(out_path: str) -> None:
 
 def plot_convergence(out_path: str) -> None:
     """
-    Plot 3: MC convergence to Heston-CF benchmark at ATM (S=K=100, T=60/252).
+    Plot 3: MC convergence at ATM (S=K=100, T=60/252).
     Each point = mean absolute error over 20 seeds.
     Two lines: standard MC and antithetic MC.
     O(1/sqrt(N)) reference line anchored at standard MC first point.
+
+    The benchmark must be the Black-Scholes price at the SAME sigma the MC uses.
+    mc_price simulates GBM at SIGMA_BS, so its estimator converges to the BS price, not
+    to the Heston price. Benchmarking it against Heston-CF measured the constant model
+    gap (0.0265 at these parameters) rather than Monte-Carlo error: the curve floored
+    instead of converging and the fitted log-log slope came out at -0.395 against a
+    theoretical -0.500. Against the correct benchmark it is -0.510.
     """
     T_yr      = 60 / TRADING_DAYS
     K_atm     = 100.0
-    benchmark = heston_price(S, K_atm, T_yr, r, **HESTON, option_type="call")
-    print(f"  Heston-CF benchmark (ATM, 60d call): {benchmark:.6f}")
+    benchmark = bs_price(S, K_atm, T_yr, r, SIGMA_BS, "call")
+    model_gap = abs(benchmark - heston_price(S, K_atm, T_yr, r, **HESTON, option_type="call"))
+    print(f"  BS benchmark (ATM, 60d call, sigma={SIGMA_BS}): {benchmark:.6f}")
+    print(f"  (BS-vs-Heston model gap at this point: {model_gap:.6f} — NOT MC error)")
 
     n_paths_list = [100, 500, 1_000, 5_000, 10_000, 50_000]
     n_seeds      = 20
@@ -216,8 +225,8 @@ def plot_convergence(out_path: str) -> None:
     ax.loglog(ns, mae_anti, "s-", color="darkorange", label="Antithetic MC")
     ax.loglog(ns, ref,      "--", color="gray",        label=r"$O(1/\sqrt{N})$")
     ax.set_xlabel("Number of MC Paths")
-    ax.set_ylabel("Mean Absolute Error vs. Heston-CF")
-    ax.set_title(f"MC Convergence to Heston-CF Benchmark (ATM 60d Call)\n"
+    ax.set_ylabel("Mean Absolute Error vs. Black-Scholes")
+    ax.set_title(f"MC Convergence to Black-Scholes Benchmark (ATM 60d Call)\n"
                  f"Standard MC slope: {slope:.3f} (theory −0.500), 20 seeds each")
     ax.legend()
     ax.grid(True, which="both", alpha=0.3)

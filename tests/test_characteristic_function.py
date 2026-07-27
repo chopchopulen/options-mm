@@ -15,11 +15,29 @@ def test_heston_cf_reduces_to_bs_when_xi_zero():
     assert abs(heston_p - bs_p) < 0.01
 
 
-def test_put_call_parity():
+def test_put_matches_bs_in_zero_volvol_limit():
+    """The put branch needs an INDEPENDENT check, not a parity check.
+
+    heston_price computes the put as `call - (S - K*exp(-rT))`, so asserting
+    put-call parity on it is a tautology: it holds by construction for any call price,
+    including a wrong one. The previous test did exactly that.
+
+    Driving xi -> 0 with rho = 0 collapses Heston to Black-Scholes at sigma = sqrt(v0),
+    where the put has a closed form derived by a completely separate route.
+    """
+    heston_put = heston_price(S, K, T, r, v0=0.04, kappa=2.0, theta=0.04,
+                              xi=1e-6, rho=0.0, option_type="put")
+    bs_put     = bs_price(S, K, T, r, sigma=0.2, option_type="put")
+    assert abs(heston_put - bs_put) < 0.01, f"Heston put {heston_put} vs BS put {bs_put}"
+
+
+def test_put_call_parity_holds_by_construction():
+    # Documents, rather than tests, the parity relation: it is how the put is computed.
+    # Kept so the construction is explicit and a future refactor to an independent put
+    # integration is still required to satisfy it.
     call = heston_price(S, K, T, r, **HESTON, option_type="call")
     put  = heston_price(S, K, T, r, **HESTON, option_type="put")
-    parity_rhs = S - K * np.exp(-r * T)
-    assert abs((call - put) - parity_rhs) < 1e-6
+    assert abs((call - put) - (S - K * np.exp(-r * T))) < 1e-6
 
 
 def test_prices_positive_finite():
