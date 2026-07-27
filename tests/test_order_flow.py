@@ -45,43 +45,81 @@ class TestOrderFlow:
 
     def test_no_informed_when_prices_equal(self):
         trades = self.sim.generate_trades(
-            S_true=100.0, S_stale=100.0, bid=99.0, ask=101.0, dt=1/252
+            S_true=100.0, S_stale=100.0, bid=99.0, ask=101.0, dt_days=1/78
         )
         # No informed traders when prices match
         for t in trades:
             assert t["trader_type"] == "noise"
 
-    def test_informed_hit_correct_side(self):
-        # S_true > S_stale: call is underpriced by MM, informed buys (hits ask)
+    def test_informed_hit_correct_side_call(self):
+        # S_true > S_stale: the call is worth MORE than the MM's stale fair, so the
+        # informed trader lifts the ask.
         trades = self.sim.generate_trades(
-            S_true=101.0, S_stale=100.0, bid=99.5, ask=100.5, dt=1/252
+            S_true=101.0, S_stale=100.0, bid=99.5, ask=100.5, dt_days=1/78,
+            option_type="call",
         )
         informed = [t for t in trades if t["trader_type"] == "informed"]
-        if informed:
-            # All informed should be buying (hitting ask) when S_true > S_stale
-            for t in informed:
-                assert t["side"] == "buy"
+        assert len(informed) == 1, "staleness above threshold must produce one informed trade"
+        assert informed[0]["side"] == "buy"
+
+    def test_informed_hit_correct_side_put(self):
+        # Same underlying move, but a PUT is worth LESS when S rises, so the informed
+        # trader must hit the bid. Deciding the side from the underlying move alone
+        # (the pre-fix behaviour) would say "buy" here, which is backwards.
+        trades = self.sim.generate_trades(
+            S_true=101.0, S_stale=100.0, bid=99.5, ask=100.5, dt_days=1/78,
+            option_type="put",
+        )
+        informed = [t for t in trades if t["trader_type"] == "informed"]
+        assert len(informed) == 1
+        assert informed[0]["side"] == "sell"
+
+    def test_informed_side_reverses_with_underlying(self):
+        # S_true < S_stale reverses both: calls sold, puts bought.
+        for otype, expected in (("call", "sell"), ("put", "buy")):
+            trades = self.sim.generate_trades(
+                S_true=99.0, S_stale=100.0, bid=99.5, ask=100.5, dt_days=1/78,
+                option_type=otype,
+            )
+            informed = [t for t in trades if t["trader_type"] == "informed"]
+            assert len(informed) == 1
+            assert informed[0]["side"] == expected, f"{otype} on a down move"
 
     def test_trade_has_required_fields(self):
         trades = self.sim.generate_trades(
-            S_true=100.0, S_stale=100.0, bid=99.0, ask=101.0, dt=1.0
+            S_true=101.0, S_stale=100.0, bid=99.0, ask=101.0, dt_days=1.0
         )
-        if trades:
-            for t in trades:
-                assert "side" in t and "size" in t and "price" in t and "trader_type" in t
+        assert trades, "an above-threshold move must generate at least the informed trade"
+        for t in trades:
+            assert "side" in t and "size" in t and "price" in t and "trader_type" in t
 
     def test_informed_larger_than_noise(self):
         # Run many steps and check informed avg size > noise avg size
         noise_sizes, informed_sizes = [], []
         for _ in range(1000):
             trades = self.sim.generate_trades(
-                S_true=101.0, S_stale=100.0, bid=99.0, ask=101.0, dt=1/252
+                S_true=101.0, S_stale=100.0, bid=99.0, ask=101.0, dt_days=1/78
             )
             for t in trades:
                 if t["trader_type"] == "noise":
                     noise_sizes.append(t["size"])
                 else:
                     informed_sizes.append(t["size"])
-        if noise_sizes and informed_sizes:
-            import numpy as np
-            assert np.mean(informed_sizes) > np.mean(noise_sizes)
+        assert noise_sizes and informed_sizes, "both populations must actually arrive"
+        import numpy as np
+        assert np.mean(informed_sizes) > np.mean(noise_sizes)
+
+    def test_noise_arrival_rate_is_per_day(self):
+        # lambda_noise is documented as a per-DAY rate, so over one full day's worth of
+        # steps the realized count must be near lambda_noise, not 252x smaller.
+        steps, lam = 78, self.sim.lambda_noise
+        counts = [
+            len([t for t in self.sim.generate_trades(
+                S_true=100.0, S_stale=100.0, bid=99.0, ask=101.0, dt_days=1/steps
+            ) if t["trader_type"] == "noise"])
+            for _ in range(steps * 200)
+        ]
+        realized_per_day = sum(counts) / 200
+        assert 0.8 * lam < realized_per_day < 1.2 * lam, (
+            f"expected ~{lam} noise arrivals/day, realized {realized_per_day:.2f}"
+        )

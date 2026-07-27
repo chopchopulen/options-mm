@@ -14,25 +14,33 @@ class OrderFlowSimulator:
         self.rng = np.random.default_rng(seed)
 
     def generate_trades(self, S_true: float, S_stale: float,
-                        bid: float, ask: float, dt: float) -> List[Dict]:
+                        bid: float, ask: float, dt_days: float,
+                        option_type: str = "call") -> List[Dict]:
         trades = []
-        # Noise traders: Poisson arrivals
-        n_noise = self.rng.poisson(self.lambda_noise * dt)
+        # Noise traders: Poisson arrivals. lambda_noise is per DAY (README: "λ=8/day × dt"),
+        # so dt_days must be in days. Passing an annualized dt here understated arrivals by
+        # 252x — 8.0 * (1/252/78) yields ~5.7 noise trades per MONTH instead of per day.
+        n_noise = self.rng.poisson(self.lambda_noise * dt_days)
         for _ in range(n_noise):
             side  = "buy" if self.rng.random() < 0.5 else "sell"
             size  = int(self.rng.integers(1, self.max_noise_size + 1))
             price = ask if side == "buy" else bid
             trades.append({"side": side, "size": size, "price": price, "trader_type": "noise"})
 
-        # Informed traders: arrive only when quotes are stale
+        # Informed traders: arrive only when quotes are stale.
+        # The trigger is staleness of the UNDERLYING, but the profitable side depends on
+        # the option type: a call gains value when S rises, a put loses it. Deciding the
+        # side from the sign of the underlying move alone is correct for calls and exactly
+        # backwards for puts.
         mispricing = (S_true - S_stale) / S_stale
         if abs(mispricing) > self.staleness_threshold:
             size = int(self.rng.integers(self.min_informed_size, self.max_informed_size + 1))
-            if mispricing > 0:
-                # True price higher → MM ask is cheap → informed buys
+            option_edge = mispricing if option_type == "call" else -mispricing
+            if option_edge > 0:
+                # Option worth more than the MM's stale fair → MM ask is cheap → informed buys
                 trades.append({"side": "buy",  "size": size, "price": ask, "trader_type": "informed"})
             else:
-                # True price lower → MM bid is rich → informed sells
+                # Option worth less than the MM's stale fair → MM bid is rich → informed sells
                 trades.append({"side": "sell", "size": size, "price": bid, "trader_type": "informed"})
 
         return trades

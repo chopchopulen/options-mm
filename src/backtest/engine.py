@@ -132,7 +132,8 @@ class BacktestEngine:
                         continue
 
                     bid, ask = quoter.quote(fair, g, v_greek, sigma_uncertainty)
-                    trades = flow_sim.generate_trades(S_true, S_stale, bid, ask, dt)
+                    trades = flow_sim.generate_trades(S_true, S_stale, bid, ask,
+                                                      1.0 / spd, opt["option_type"])
 
                     for trade in trades:
                         fill_size = min(trade["size"], size)
