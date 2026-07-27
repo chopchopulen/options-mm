@@ -57,14 +57,27 @@ class BacktestEngine:
         sigma_window = bt["sigma_uncertainty_window"]
         staleness = bt["quote_staleness_steps"]
 
+        H = self.cfg.HESTON
+        H_kappa, H_theta = H["kappa"], H["theta"]
+
         heston = HestonSimulator(**self.cfg.HESTON, seed=self.seed)
         total_steps = n_days * spd
         prices, variances = heston.simulate(n_steps=total_steps, dt=dt)
 
+        # Closed-form ATM implied vol given the CURRENT instantaneous variance. Under
+        # Heston the expected average variance over [0, T] is
+        #     E[v_bar] = theta + (v_t - theta) * (1 - exp(-kappa T)) / (kappa T)
+        # and ATM implied vol is its square root. Derived from the variance dynamics
+        # already in the model -- no fitted constants. Reduces to sqrt(theta) when
+        # v_t == theta, and to sqrt(v_t) as T -> 0.
+        def true_atm_iv(v_t, T):
+            kT = H_kappa * max(T, 1e-9)
+            v_bar = H_theta + (v_t - H_theta) * (1.0 - np.exp(-kT)) / kT
+            return float(np.sqrt(max(v_bar, 1e-12)))
+
         # Implied-vol surface. SHAPE (skew + term structure) comes from the Heston
         # characteristic function at the model's own parameters; the maker supplies only
         # the ATM LEVEL. Built once — the shape does not depend on the level estimate.
-        H = self.cfg.HESTON
         vol_surface = HestonVolSurface(
             S_ref=H["S0"], r=r, v0=H["v0"], kappa=H["kappa"],
             theta=H["theta"], xi=H["xi"], rho=H["rho"],
@@ -141,6 +154,14 @@ class BacktestEngine:
                 sigma_implied = max(sigma_implied, 0.01)
                 sigma_uncertainty = sigma_implied
 
+                # Vol-informed signal. v_now is the CONTEMPORANEOUS variance -- the same
+                # information discipline as S_now, no look-ahead. vol_threshold is the
+                # standard error of the maker's own estimator, sigma/sqrt(2*window): a
+                # signal smaller than that is indistinguishable from sampling noise, so a
+                # rational informed trader would not act on it.
+                v_now = variances[idx]
+                vol_threshold = sigma_implied / np.sqrt(2.0 * sigma_window)
+
                 # Compute portfolio greeks once per step
                 all_pos = []
                 for o in options:
@@ -172,6 +193,13 @@ class BacktestEngine:
                     # Contemporaneous fair: what the option is actually worth at fill time,
                     # at the contemporaneous spot AND the skew that spot implies.
                     fair_now = bs_price(S_now, opt["K"], T_remaining, r, sig_now, opt["option_type"])
+                    # TRUE fair: contemporaneous spot AND the vol the market is actually
+                    # at, not the maker's lagging estimate of it. The gap between fair_now
+                    # and fair_true is what the vol-informed population takes.
+                    sig_true = vol_surface.quoted_iv(S_now, opt["K"], T_remaining,
+                                                     true_atm_iv(v_now, T_remaining))
+                    fair_true = bs_price(S_now, opt["K"], T_remaining, r, sig_true,
+                                         opt["option_type"])
                     g       = gamma(S_stale, opt["K"], T_remaining, r, sig_leg)
                     v_greek = vega(S_stale, opt["K"], T_remaining, r, sig_leg)
                     d_greek = delta(S_stale, opt["K"], T_remaining, r, sig_leg, opt["option_type"])
@@ -193,10 +221,17 @@ class BacktestEngine:
                     # Off by default; the anchor is circular (see configs/default.py).
                     res_scale = (abs(v_greek) * (self.cfg.HESTON["xi"] / 2.0) * np.sqrt(tau_hold)
                                  if bt.get("use_reservation_price", False) else None)
+                    # Level error in IV points, and that error priced through this leg's
+                    # vega in dollars per share.
+                    vol_signal = true_atm_iv(v_now, T_remaining) - sigma_implied
+                    vol_edge   = v_greek * vol_signal
                     trades = flow_sim.generate_trades(S_now, S_stale, bid, ask,
                                                       1.0 / spd, opt["option_type"],
                                                       option_edge=fair_now - fair,
-                                                      reservation_scale=res_scale)
+                                                      reservation_scale=res_scale,
+                                                      vol_signal=vol_signal,
+                                                      vol_edge=vol_edge,
+                                                      vol_threshold=vol_threshold)
 
                     for trade in trades:
                         # Counterparty buying lifts the MM's ask; selling hits its bid.
@@ -223,9 +258,18 @@ class BacktestEngine:
                             inventory.fill_option(opt["K"], opt["T_days"], opt["option_type"],
                                                   "buy", fill_size, bid)
                             gross_spread, signed_qty = fair - bid, fill_size
+                        # Adverse selection splits by POPULATION, because two
+                        # economically distinct groups are taking two different things:
+                        #   spot: the maker's stale view of S      (fair_now - fair)
+                        #   vol : its stale view of sigma          (fair_true - fair_now)
+                        # Their sum is the full gap between the quote-time mark and true
+                        # contemporaneous value. Booking only the spot leg -- as this did
+                        # before the vol-informed population existed -- left the vol gap
+                        # with no component to land in, and it went straight to residual.
                         day_spread_fills.append({
                             "spread_captured": gross_spread,
                             "adverse_selection": (fair_now - fair) * signed_qty / fill_size,
+                            "adverse_selection_vol": (fair_true - fair_now) * signed_qty / fill_size,
                             "size": fill_size,
                             "contract_size": contract_size,
                         })
@@ -313,12 +357,17 @@ class BacktestEngine:
                 f["adverse_selection"] * f["size"] * f["contract_size"]
                 for f in day_spread_fills
             )
+            adverse_selection_vol = sum(
+                f["adverse_selection_vol"] * f["size"] * f["contract_size"]
+                for f in day_spread_fills
+            )
             hedge_cost_total = -sum(day_hedge_costs)
-            residual = mtm_pnl - (spread_capture + adverse_selection + daily_theta_pnl + daily_gamma_pnl + daily_vega_pnl + daily_vanna_pnl + daily_volga_pnl + hedge_cost_total)
+            residual = mtm_pnl - (spread_capture + adverse_selection + adverse_selection_vol + daily_theta_pnl + daily_gamma_pnl + daily_vega_pnl + daily_vanna_pnl + daily_volga_pnl + hedge_cost_total)
 
             attr = {
                 "spread_capture": spread_capture,
                 "adverse_selection": adverse_selection,
+                "adverse_selection_vol": adverse_selection_vol,
                 "theta_pnl":      daily_theta_pnl,
                 "gamma_pnl":      daily_gamma_pnl,
                 "vega_pnl":       daily_vega_pnl,

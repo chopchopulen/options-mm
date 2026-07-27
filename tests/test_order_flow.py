@@ -183,3 +183,53 @@ class TestOrderFlow:
                 S_true=100.0, S_stale=100.0, bid=9.20, ask=10.80, dt_days=1.0)
                 if t["trader_type"] == "noise"])
         assert abs(n_tight - n_wide) / max(n_tight, 1) < 0.10
+
+    def test_vol_informed_buys_when_true_vol_is_above_the_mark(self):
+        trades = self.sim.generate_trades(
+            S_true=100.0, S_stale=100.0, bid=9.5, ask=10.5, dt_days=1/78,
+            option_type="call", option_edge=0.0,
+            vol_signal=+0.06, vol_edge=+2.00, vol_threshold=0.045,
+        )
+        vi = [t for t in trades if t["trader_type"] == "informed_vol"]
+        assert len(vi) == 1 and vi[0]["side"] == "buy"
+
+    def test_vol_informed_sells_when_true_vol_is_below_the_mark(self):
+        trades = self.sim.generate_trades(
+            S_true=100.0, S_stale=100.0, bid=9.5, ask=10.5, dt_days=1/78,
+            option_type="call", option_edge=0.0,
+            vol_signal=-0.06, vol_edge=-2.00, vol_threshold=0.045,
+        )
+        vi = [t for t in trades if t["trader_type"] == "informed_vol"]
+        assert len(vi) == 1 and vi[0]["side"] == "sell"
+
+    def test_vol_informed_ignores_signals_inside_estimator_noise(self):
+        # Signal below the estimator's own standard error is indistinguishable from
+        # sampling noise; a rational informed trader does not act on it.
+        trades = self.sim.generate_trades(
+            S_true=100.0, S_stale=100.0, bid=9.5, ask=10.5, dt_days=1/78,
+            option_type="call", option_edge=0.0,
+            vol_signal=0.01, vol_edge=5.00, vol_threshold=0.045,
+        )
+        assert not [t for t in trades if t["trader_type"] == "informed_vol"]
+
+    def test_vol_informed_will_not_cross_a_spread_wider_than_its_edge(self):
+        trades = self.sim.generate_trades(
+            S_true=100.0, S_stale=100.0, bid=5.0, ask=15.0, dt_days=1/78,
+            option_type="call", option_edge=0.0,
+            vol_signal=+0.30, vol_edge=+2.00, vol_threshold=0.045,
+        )
+        assert not [t for t in trades if t["trader_type"] == "informed_vol"]
+
+    def test_spot_and_vol_populations_are_independent(self):
+        """A spot edge too small to cross must not suppress the vol trader.
+
+        An early `return` here previously did exactly that -- the two populations trade on
+        entirely different quantities and must be gated separately.
+        """
+        trades = self.sim.generate_trades(
+            S_true=101.0, S_stale=100.0, bid=9.5, ask=10.5, dt_days=1/78,
+            option_type="call", option_edge=0.01,          # spot edge below half-spread
+            vol_signal=+0.06, vol_edge=+2.00, vol_threshold=0.045,
+        )
+        assert not [t for t in trades if t["trader_type"] == "informed"]
+        assert len([t for t in trades if t["trader_type"] == "informed_vol"]) == 1

@@ -17,7 +17,10 @@ class OrderFlowSimulator:
                         bid: float, ask: float, dt_days: float,
                         option_type: str = "call",
                         option_edge: float = None,
-                        reservation_scale: float = None) -> List[Dict]:
+                        reservation_scale: float = None,
+                        vol_signal: float = None,
+                        vol_edge: float = None,
+                        vol_threshold: float = None) -> List[Dict]:
         trades = []
         # Noise traders: Poisson arrivals. lambda_noise is per DAY (README: "λ=8/day × dt"),
         # so dt_days must be in days. Passing an annualized dt here understated arrivals by
@@ -84,15 +87,47 @@ class OrderFlowSimulator:
             size = int(self.rng.integers(self.min_informed_size, self.max_informed_size + 1))
             if option_edge is None:
                 edge = mispricing if option_type == "call" else -mispricing
+                worth_crossing = True
             else:
                 edge = option_edge
-                if abs(edge) <= (ask - bid) / 2.0:
-                    return trades          # not worth crossing; informed stays out
-            if edge > 0:
+                # Not worth crossing -- but only THIS population stands down. An early
+                # return here would also suppress the vol-informed trader below, whose
+                # edge is an entirely different quantity.
+                worth_crossing = abs(edge) > half_spread
+            if not worth_crossing:
+                pass
+            elif edge > 0:
                 # Option worth more than the MM's stale fair → MM ask is cheap → informed buys
                 trades.append({"side": "buy",  "size": size, "price": ask, "trader_type": "informed"})
             else:
                 # Option worth less than the MM's stale fair → MM bid is rich → informed sells
                 trades.append({"side": "sell", "size": size, "price": bid, "trader_type": "informed"})
+
+        # VOL-informed traders. A second, economically distinct informed population.
+        #
+        # The population above exploits staleness in the maker's view of SPOT. This one
+        # exploits staleness in its view of VOLATILITY: the maker quotes off a 10-sample
+        # rolling realized-vol estimate, which lags the true instantaneous variance, and a
+        # counterparty who knows where vol actually is can buy or sell the whole surface
+        # against it. In real options markets this is the flow that hurts a maker most --
+        # it arrives ahead of vol events, and it is why a maker manages vega rather than
+        # just delta. It could not be modelled at all before the vol surface existed.
+        #
+        # `vol_signal` is the level error in IV points and `vol_edge` is that error priced
+        # through the leg's vega, in dollars per share. Arrival needs BOTH a signal larger
+        # than the estimator could produce by chance, and an edge that clears the spread
+        # the trader must cross -- the same discipline applied to the spot population.
+        if (vol_signal is not None and vol_edge is not None
+                and vol_threshold is not None
+                and abs(vol_signal) > vol_threshold
+                and abs(vol_edge) > half_spread):
+            size = int(self.rng.integers(self.min_informed_size, self.max_informed_size + 1))
+            if vol_signal > 0:
+                # True vol above the maker's mark → options are cheap → buy vega.
+                trades.append({"side": "buy", "size": size, "price": ask,
+                               "trader_type": "informed_vol"})
+            else:
+                trades.append({"side": "sell", "size": size, "price": bid,
+                               "trader_type": "informed_vol"})
 
         return trades

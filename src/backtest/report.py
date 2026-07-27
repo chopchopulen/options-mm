@@ -50,7 +50,7 @@ def print_summary(results: Dict) -> None:
     print(f"  Max Drawdown:       ${_max_drawdown(pnl):>10.2f}")
     print()
     print("  P&L Attribution (cumulative):")
-    for col in ["spread_capture", "adverse_selection", "theta_pnl", "gamma_pnl", "vega_pnl", "vanna_pnl", "volga_pnl", "hedge_cost", "residual"]:
+    for col in ["spread_capture", "adverse_selection", "adverse_selection_vol", "theta_pnl", "gamma_pnl", "vega_pnl", "vanna_pnl", "volga_pnl", "hedge_cost", "residual"]:
         print(f"    {col:<22} ${df[col].sum():>10.2f}")
     residual_total = df["residual"].sum()
     residual_pct   = abs(residual_total / results["total_pnl"]) * 100 if results["total_pnl"] != 0 else 0
@@ -78,8 +78,8 @@ def plot_results(results: Dict, save_path: str = None) -> None:
 
     # Daily P&L Attribution stacked bar
     ax2 = fig.add_subplot(gs[1, 0])
-    components = ["spread_capture", "adverse_selection", "theta_pnl", "gamma_pnl", "vega_pnl", "vanna_pnl", "volga_pnl", "hedge_cost"]
-    colors     = ["green", "crimson", "orange", "blue", "purple", "teal", "brown", "red"]
+    components = ["spread_capture", "adverse_selection", "adverse_selection_vol", "theta_pnl", "gamma_pnl", "vega_pnl", "vanna_pnl", "volga_pnl", "hedge_cost"]
+    colors     = ["green", "crimson", "darkred", "orange", "blue", "purple", "teal", "brown", "red"]
     bottom_pos = np.zeros(len(df))
     bottom_neg = np.zeros(len(df))
     for comp, color in zip(components, colors):
