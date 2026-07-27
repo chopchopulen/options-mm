@@ -38,6 +38,15 @@ HEDGER = dict(
 )
 
 RISK = dict(
+    # The POSITION LIMIT is the binding risk control for this book. The aggregate Greek
+    # caps below are set at 100% of declared capacity, so for THIS universe they are
+    # redundant with it — but not redundant in principle: they are derived from this
+    # book's composition (6 legs, 30/60d, sigma=0.20). A longer-dated or larger universe
+    # pushes per-contract vega up (60d ATM already carries 8,718 against 6,179 at 30d),
+    # and the aggregate cap would then bind before the per-leg limit does. No fraction of
+    # capacity is invented here; choosing one would require a capital base or risk budget
+    # that does not exist in this repo.
+    #
     # Greek caps are DERIVED from max_contracts_per_leg, not chosen independently.
     # The book's declared capacity is 20 contracts x 6 legs = 120 contracts. At
     # sigma=0.20 the six legs carry, per contract (vega/gamma x contract_size=100):
