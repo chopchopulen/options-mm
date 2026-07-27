@@ -44,8 +44,10 @@ def test_engine_pnl_matches_independent_cash_and_mark_ledger():
     original_book_value = BacktestEngine._book_value
     original_init = Inventory.__init__
 
-    def recording_book_value(options, inventory, S, sigma, r, days_elapsed, contract_size):
-        value = original_book_value(options, inventory, S, sigma, r, days_elapsed, contract_size)
+    def recording_book_value(*args, **kwargs):
+        # Signature-agnostic on purpose: this probe must keep reconciling when the marking
+        # convention changes (it caught the per-leg vol surface change by failing loudly).
+        value = original_book_value(*args, **kwargs)
         captured["book"] = value
         return value
 
