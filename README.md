@@ -1,18 +1,18 @@
 # Options Market Making Simulator
 
 > **⚠️ READ `docs/FINAL_NUMBERS.md` BEFORE QUOTING ANY NUMBER FROM THIS REPO.**
-> A blind audit found 20 defects, including a P&L identity that overstated returns by 48% and a
+> A blind audit found 21 defects, including a P&L identity that overstated returns by 48% and a
 > load-bearing test that asserted an accounting identity against its own definition. Much of the
 > prose below predates that audit. Corrected sections are marked inline; `docs/FINAL_NUMBERS.md`
 > is authoritative on what is claimable, what is retired, and what remains open.
 
-A production-quality options market making simulator in Python. The system quotes a multi-strike, multi-expiry options book on a Heston stochastic-volatility underlying, models adverse selection from informed traders, delta-hedges in real time, and decomposes daily P&L into five economic components — all validated by 55 unit tests.
+A production-quality options market making simulator in Python. The system quotes a multi-strike, multi-expiry options book on a Heston stochastic-volatility underlying, models adverse selection from informed traders, delta-hedges in real time, and decomposes daily P&L into eight economic components — all validated by 88 unit tests.
 
 ---
 
 ## What This Is
 
-This project simulates how a market maker runs a book of equity options. The MM posts bid and ask prices on 6 options simultaneously, earns the spread when traders hit the quotes, and continuously delta-hedges to stay roughly flat on direction. After 30 trading days, the P&L is decomposed into its economic causes using a first-order Greek approximation.
+This project simulates how a market maker runs a book of equity options. The MM posts bid and ask prices on 6 options simultaneously, earns the spread when traders hit the quotes, and continuously delta-hedges to stay roughly flat on direction. After 30 trading days, the P&L is decomposed into its economic causes using a second-order Greek expansion plus an explicit adverse-selection term.
 
 The simulation is genuinely risky: a Heston stochastic-vol model drives the underlying, meaning implied vol clusters and spikes unpredictably. Informed traders exploit quote staleness whenever the MM's pricing lags the true price — this is the Glosten-Milgrom adverse selection mechanism. The MM can lose money.
 
@@ -30,20 +30,25 @@ src/
     binomial.py       ← CRR binomial tree pricer
     monte_carlo.py    ← antithetic-variates MC pricer
   greeks/
-    analytical.py     ← closed-form Delta, Gamma, Vega, Theta
+    analytical.py     ← closed-form Delta, Gamma, Vega, Theta, Vanna, Volga
     numerical.py      ← finite-difference Greeks (cross-validation)
     portfolio.py      ← portfolio-level Greek aggregation
   market/
-    underlying.py     ← Heston SV simulator (Euler-Maruyama, full truncation)
-    order_flow.py     ← two-population order flow (noise + informed traders)
+    underlying.py     ← Heston SV simulator (Euler-Maruyama; max(v,0) in drift and
+                        diffusion but max(v+dv,1e-8) carried — absorption, not textbook
+                        full truncation. Immaterial here: Feller is satisfied)
+    order_flow.py     ← two-population order flow (noise + informed); optional
+                        counterparty reservation price, OFF by default
   mm/
-    quoter.py         ← spread widening: f(Gamma, Vega, sigma_uncertainty)
+    quoter.py         ← half-spread = base + gamma carry + vega carry + GM adverse selection
     inventory.py      ← position tracking (options + underlying hedge)
     hedger.py         ← threshold-based delta rebalancing
   risk/
-    limits.py         ← per-leg and portfolio Gamma/Vega caps
+    limits.py         ← directional per-leg and portfolio Gamma/Vega caps (bid/ask sized
+                        separately so the book can always quote its way toward flat)
   pnl/
-    attribution.py    ← 5-component P&L decomposition + closure check
+    attribution.py    ← DEAD CODE. The engine inlines its own attribution and never
+                        imports this module (FINAL_NUMBERS.md OPEN #11)
   backtest/
     engine.py         ← main simulation loop (30 days × 78 steps)
     report.py         ← summary table + 5-panel matplotlib visualization
@@ -51,7 +56,7 @@ src/
     multi_seed.py     ← 20-seed aggregate statistics → results/multi_seed.csv
     sensitivity.py    ← 27-combo parameter grid search → results/sensitivity.csv
 
-tests/               ← 66 pytest tests (run: pytest tests/ -v)
+tests/               ← 88 pytest tests (run: python3 -m pytest -q)
 run_backtest.py      ← entry point
 ```
 
@@ -61,7 +66,7 @@ run_backtest.py      ← entry point
 
 ```bash
 pip install numpy scipy pandas matplotlib pytest yfinance
-pytest tests/ -v                       # 66 tests, all should pass
+python3 -m pytest -q                   # 88 tests, all should pass
 python3 run_backtest.py                # 30-day simulation, saves backtest_results.png
 python3 src/backtest/multi_seed.py     # 20-seed stats, saves results/multi_seed.csv
 python3 src/backtest/sensitivity.py    # parameter grid search, saves results/sensitivity.csv
@@ -152,21 +157,49 @@ This is **not** the Glosten-Milgrom mechanism, despite earlier claims in this do
 ### 6. Spread Formula
 
 ```
-half_spread = base_spread + γ_coeff × |Gamma| × contract_size + ν_coeff × |Vega| × σ_uncertainty
+half_spread = base_spread
+            + 0.5 × |Gamma| × S² × σ² × τ          (gamma carry over the holding horizon)
+            + |Vega| × (ξ/2) × √τ                  (vol move over τ; from dv = ξ√v dW)
+            + |Delta| × S × E[|m| | informed] × informed_share   (Glosten-Milgrom break-even)
 ```
 
-The MM widens quotes when portfolio Gamma is high (convexity risk) or vol uncertainty is high (pricing risk).
+Every term is the cost of something specific, and **no coefficient is fitted**. τ is the
+inventory holding horizon, derived from the arrival rate as `steps_per_day / λ` — not the hedge
+interval, since delta hedging removes delta risk only while gamma and vega persist for the life
+of the position. The adverse-selection term is the Glosten-Milgrom break-even charge: the maker
+pays the informed trader's edge on informed volume and collects the half-spread on all volume.
+
+This yields **1.13%–3.17% of premium** across the six legs. The previous formula —
+`base + γ_coeff × |Gamma| × contract_size + ν_coeff × |Vega| × σ_uncertainty` — built a dollar
+charge from a dimensionless second derivative with no horizon or position size in it, and
+produced half-spreads of **10–51% of premium**, of which 97%+ came from that one term
+(`docs/FINAL_NUMBERS.md` defect #9).
 
 ### 7. Delta Hedging
 
 After each step, if `|portfolio_delta| > 25 shares`, the hedger trades the underlying to flatten back to zero. Each hedge trade pays a 0.1% transaction cost. Delta is `option_delta × quantity × 100`.
 
+> **⚠️ The 0.1% (10bps) transaction cost is roughly 20–100× realistic.** Institutional equity
+> execution in a name like SPY is low single-digit basis points all-in. This assumption accounts
+> for **−$525,702** of the median P&L. It is documented rather than corrected — see
+> `docs/FINAL_NUMBERS.md` defect #21 and OPEN #4 for why. The full-flatten policy (no dead band)
+> also drives gratuitous turnover: hedging fires on roughly half of all 5-minute bars.
+
 ### 8. Risk Limits
 
 Before quoting each option, three limits gate the quote size:
-- **Portfolio Gamma cap**: 800 Gamma units — scale down if near limit
-- **Portfolio Vega cap**: 50,000 Vega units — scale down if near limit
-- **Per-leg position cap**: 20 contracts per strike/expiry/type — stop quoting at limit
+- **Portfolio Gamma cap**: 124 Gamma units — scale down the side that *increases* exposure
+- **Portfolio Vega cap**: 756,000 Vega units — same, directionally
+- **Per-leg position cap**: 20 contracts per strike/expiry/type — blocks only the increasing side
+
+The Greek caps are **derived from** the position cap, not chosen independently: 20 contracts ×
+6 legs is a declared capacity of 120 contracts, which carries 755,957 vega and 123.7 gamma at
+σ=0.20. The previous values (800 / 50,000) contradicted the position limit and each other by
+~100×: vega bound at 6.6% of declared capacity while gamma bound at 646% of it.
+
+All three limits are **directional**. Sizing on `abs(position)` refused the inventory-reducing
+side as hard as the increasing side, so a book at the cap froze and could only exit via expiry
+(`docs/FINAL_NUMBERS.md` defect #7).
 
 ### 9. P&L Attribution
 
@@ -174,14 +207,17 @@ Daily P&L decomposes into five economic components:
 
 | Component | Formula | Meaning |
 |-----------|---------|---------|
-| `spread_capture` | Σ (ask − fair or fair − bid) × fills × 100 | Revenue from liquidity provision |
+| `spread_capture` | Σ (ask − fair_stale or fair_stale − bid) × fills × 100 | **Gross quoted** spread, measured at the quote-time mark |
+| `adverse_selection` | Σ (fair_now − fair_stale) × signed_qty × 100 | Cost of quoting off a stale mark. **Sums with `spread_capture` to give the edge against the contemporaneous fair** — read the two together, never `spread_capture` alone |
 | `theta_pnl` | Σ_steps portfolio_theta × dt | Time decay (positive when short options) |
 | `gamma_pnl` | Σ_steps ½ × Γ × S² × (σ²_realized − σ²_implied) × dt | Variance differential: profit if realized vol > implied |
 | `vega_pnl` | portfolio_vega_EOD × (σ_EOD − σ_SOD) | P&L from shifts in implied vol level |
-| `vanna_pnl` | portfolio_vanna_EOD × ΔS × Δσ | Cross-gamma: P&L from joint spot-vol moves |
-| `volga_pnl` | ½ × portfolio_volga_EOD × Δσ² | Vol convexity: P&L from curvature in vol |
+| `vanna_pnl` | −portfolio_vanna_EOD × ΔS × Δσ | Cross-gamma: P&L from joint spot-vol moves |
+| `volga_pnl` | −½ × portfolio_volga_EOD × Δσ² | Vol convexity: P&L from curvature in vol |
 | `hedge_cost` | −Σ transaction costs | Always ≤ 0 |
-| `residual` | mtm_pnl − all of the above | Higher-order terms not captured by this expansion |
+| `residual` | mtm_pnl − all of the above | Higher-order terms. **A plug** — it closes by definition, so a bug anywhere lands here silently. Currently 2.50% of gross flow |
+
+The second-order terms carry a **minus** sign because `port_eod` Greeks are evaluated at σ_EOD, the endpoint of the move, so the Taylor expansion runs backwards from it. Using `+½volga` made the approximation worse on every move tested — vol terms totalled $44,038 against an exact reprice of $2,966.70 (`docs/FINAL_NUMBERS.md` defect #8).
 
 The accounting identity `components + residual ≡ mtm_pnl` holds to machine precision. Adding vanna and volga reduces the residual from ~88% (first-order only) to ~22% — the remaining residual reflects third-order effects and discrete-hedging approximation error.
 
@@ -314,59 +350,17 @@ a recommendation.
 
 ---
 
-## Resume Bullets
+## What This Work Actually Demonstrates
 
-> **⚠️ These bullets were written before the audit. Four of the five state things the audit
-> disproved. They are kept for provenance with corrections attached — do not reuse them as
-> written. See `docs/FINAL_NUMBERS.md` for what is actually claimable.**
-
-> Built a production-quality options market making simulator in Python: implemented Black-Scholes, binomial tree, and Monte Carlo (antithetic variates) pricers validated against put-call parity and inter-model convergence tests.
-
-**Holds up.** Inter-model convergence is real and measured: CRR(200) within $0.022, MC(400k)
-within $0.035, Heston-CF within $0.0002. One caveat — the *Heston* put-call parity test was a
-tautology (the put branch is defined as `call − (S − Ke^−rT)`), so it validated nothing until
-it was replaced by an independent zero-vol-of-vol check. Defect #15.
-
-> Implemented a real-time Greeks engine (Delta, Gamma, Vega, Theta, Vanna, Volga) analytically and via finite differences, with agreement verified to 4 decimal places; aggregated portfolio-level Greeks across a multi-strike, multi-expiry option book.
-
-**Holds up, and understates itself.** Measured agreement is 1e-07 or better off-ATM, not 4
-decimal places. This is the one component that audited fully clean.
-
-> Modeled realistic adverse selection using a two-population order flow model (Glosten-Milgrom-inspired): informed traders exploit quote staleness from a Heston stochastic-vol underlying, making the simulation genuinely risky rather than trivially spread-collecting.
-
-**Wrong on every clause at the time of writing.** It was not two-population — `lambda_noise` was
-applied against an annualized `dt`, giving ~5.7 noise trades per *month* and **zero observed in
-every seed** (#5). It was not Glosten-Milgrom — no informed-arrival probability, no conditional
-expectation, no Bayesian update (#20 in `audit/FINDINGS.md`). Informed traders did not exploit
-quote staleness, they read `prices[idx+1]`, the *next bar*, and won 334 of 334 fills (#4). And it
-*was* trivially spread-collecting: fill probability was completely independent of quote width, so
-P&L was exactly linear and unbounded in the spread (#11). A derived GM adverse-selection charge
-exists now, but the quoter is still not a GM maker.
-
-> Built second-order P&L attribution decomposing daily returns into spread capture, theta, gamma, vega, vanna, and volga — with a hard closure test asserting components sum to mark-to-market P&L to machine precision; adding vanna/volga reduced the unexplained residual from 88% to 22%.
-
-**The "hard closure test" is the keystone defect of this project.** It asserted
-`Σcomponents + residual == total` where the engine *defines* `residual := total − Σcomponents`.
-It is an identity against itself, passes for any inputs including arbitrarily wrong ones, and it
-is why the other nineteen defects survived a green 70-test suite (#14). The "88% → 22%" figure
-never reproduced at any commit, and the residual was separately being measured against an
-unstable denominator. The attribution identity does close now, at 2.50% of gross flow — but on a
-test that can actually fail.
-
-> Ran a parameter sensitivity grid search (27 combos × 5 seeds) over hedge threshold, spread width, and adverse-selection threshold; ranked results by mean Sharpe and exported to CSV for strategy optimization.
-
-**Retired.** The ranking carries no demonstrated information (#18, above), and "mean Sharpe" is
-not a Sharpe ratio — there is no capital base anywhere in this repo, so the statistic is an
-annualized mean/std ratio of a dollar P&L stream, invariant to leverage and book size (#20). The
-metric has been renamed `pnl_snr` in code so it cannot leak into a future writeup as a
-risk-adjusted return.
-
-### An honest replacement bullet
-
-> Audited a stochastic options market-making simulator and found 20 defects that a green
+> Audited a stochastic options market-making simulator and found 21 defects that a green
 > 70-test suite had not caught, including a P&L identity that overstated returns by 48%, a
 > volatility-initialization artifact responsible for 89% of reported P&L, and a load-bearing
 > test that asserted an accounting identity against its own definition. Rebuilt the P&L
 > attribution to close at 2.5% of gross flow, derived the quoted spread from inventory carry
 > cost and a Glosten-Milgrom break-even condition with no fitted coefficients, and established
 > that the simulator's P&L level is not identified without a model of competition.
+
+The previous "Resume Bullets" section has been **removed**. Four of its five bullets stated
+things this audit disproved; they are recorded, with corrections, in the RETIRED section of
+`docs/FINAL_NUMBERS.md`. A reader should not have to parse annotated false claims to find out
+what is true.
