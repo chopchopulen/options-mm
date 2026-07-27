@@ -89,8 +89,15 @@ class BacktestEngine:
 
             for step in range(spd):
                 idx     = day * spd + step
-                S_true  = prices[idx + 1]
-                S_stale = prices[max(0, idx + 1 - staleness)]
+                # Quote time is the START of the step. S_now is the contemporaneous price:
+                # the best information ANY participant has right now. S_stale is what the MM
+                # is still quoting off, `staleness` steps behind. The informed trader's edge
+                # is exactly that gap — the MM's own lag — and nothing more.
+                # S_end is the price at the END of the step, used only after the step's
+                # trading is done (hedging, end-of-step Greeks, realized variance).
+                S_now   = prices[idx]
+                S_stale = prices[max(0, idx - staleness)]
+                S_end   = prices[idx + 1]
 
                 # Compute sigma_implied from existing history (no look-ahead)
                 sigma_implied = float(np.std(log_ret_history) * np.sqrt(TRADING_DAYS * spd))
@@ -132,7 +139,7 @@ class BacktestEngine:
                         continue
 
                     bid, ask = quoter.quote(fair, g, v_greek, sigma_uncertainty)
-                    trades = flow_sim.generate_trades(S_true, S_stale, bid, ask,
+                    trades = flow_sim.generate_trades(S_now, S_stale, bid, ask,
                                                       1.0 / spd, opt["option_type"])
 
                     for trade in trades:
@@ -168,13 +175,13 @@ class BacktestEngine:
                     T_o = max(0.0001, (o["T_days"] / TRADING_DAYS) - (day / TRADING_DAYS) - ((step + 1) / (TRADING_DAYS * spd)))
                     qty = inventory.get_option_position(o["K"], o["T_days"], o["option_type"])
                     all_pos_now.append({
-                        "S": S_true, "K": o["K"], "T": T_o,
+                        "S": S_end, "K": o["K"], "T": T_o,
                         "r": r, "sigma": sigma_implied,
                         "option_type": o["option_type"], "quantity": qty,
                     })
                 port_now = portfolio_greeks(all_pos_now, contract_size)
                 total_delta = port_now["delta"] + inventory.underlying_position
-                hedge_trades = hedger.check_and_hedge(total_delta, S_true, inventory)
+                hedge_trades = hedger.check_and_hedge(total_delta, S_end, inventory)
                 for ht in hedge_trades:
                     day_hedge_costs.append(ht["transaction_cost"])
 
@@ -183,7 +190,7 @@ class BacktestEngine:
                 step_realized_var = (log_ret ** 2) * TRADING_DAYS * spd  # annualized realized var this step
                 step_implied_var = sigma_implied ** 2
                 daily_theta_pnl += port_now["theta"] * step_dt
-                daily_gamma_pnl += 0.5 * port_now["gamma"] * S_true**2 * (step_realized_var - step_implied_var) * step_dt
+                daily_gamma_pnl += 0.5 * port_now["gamma"] * S_end**2 * (step_realized_var - step_implied_var) * step_dt
 
 
             # End of day
