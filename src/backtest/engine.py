@@ -72,7 +72,7 @@ class BacktestEngine:
 
             S_sod = prices[day * spd]
             sod_book = self._book_value(options, inventory, S_sod, sigma_implied, r, day, contract_size)
-            realized_pnl_sod = inventory.realized_pnl
+            cash_sod = inventory.cash
             underlying_sod = inventory.underlying_position * S_sod
 
             # Initialize intraday attribution accumulators (theta/gamma: step-by-step; vega/vanna/volga: set at EOD)
@@ -180,10 +180,13 @@ class BacktestEngine:
             # End of day
             S_eod = prices[(day + 1) * spd]
             eod_book = self._book_value(options, inventory, S_eod, sigma_implied, r, day + 1, contract_size)
-            realized_pnl_delta = inventory.realized_pnl - realized_pnl_sod
+            # Portfolio value = cash + option book mark + underlying mark. Daily P&L is
+            # the change in all three. The middle term must be a CASH FLOW, not an
+            # inception-to-date realized gain (see Inventory.cash).
+            cash_delta = inventory.cash - cash_sod
             underlying_eod = inventory.underlying_position * S_eod
             underlying_pnl = underlying_eod - underlying_sod
-            mtm_pnl = (eod_book - sod_book) + realized_pnl_delta + underlying_pnl
+            mtm_pnl = (eod_book - sod_book) + cash_delta + underlying_pnl
 
             # Vega P&L: use EOD portfolio greeks and net sigma change SOD→EOD
             # MTM book reflects only the net sigma change, not intraday oscillations
@@ -204,9 +207,14 @@ class BacktestEngine:
             # Rolling-window sigma is too noisy intraday — step-by-step Δσ² sums to
             # estimator noise rather than economic vol changes. EOD net moves match
             # what the MTM book actually reflects.
+            # port_eod Greeks are evaluated at sigma_EOD — the ENDPOINT of the move. The
+            # Taylor expansion therefore runs backwards from the endpoint:
+            #   V(eod) - V(sod) ~= vega*dsigma - vanna*dS*dsigma - 0.5*volga*dsigma^2
+            # so every second-order term carries a minus sign. Using +0.5*volga here made
+            # the approximation worse on every move tested.
             delta_S = S_eod - S_sod
-            daily_vanna_pnl = port_eod["vanna"] * delta_S * delta_sigma
-            daily_volga_pnl = 0.5 * port_eod["volga"] * delta_sigma ** 2
+            daily_vanna_pnl = -port_eod["vanna"] * delta_S * delta_sigma
+            daily_volga_pnl = -0.5 * port_eod["volga"] * delta_sigma ** 2
 
             # Build attribution dict using intraday-accumulated Greek P&L components
             spread_capture = sum(
