@@ -160,9 +160,13 @@ class BacktestEngine:
                         continue
 
                     bid, ask = quoter.quote(fair, g, v_greek, d_greek, S_stale, sigma_uncertainty)
+                    # Reservation scale: the option's own price uncertainty over the
+                    # holding horizon — the same quantity the quoter charges for.
+                    res_scale = abs(v_greek) * (self.cfg.HESTON["xi"] / 2.0) * np.sqrt(tau_hold)
                     trades = flow_sim.generate_trades(S_now, S_stale, bid, ask,
                                                       1.0 / spd, opt["option_type"],
-                                                      option_edge=fair_now - fair)
+                                                      option_edge=fair_now - fair,
+                                                      reservation_scale=res_scale)
 
                     for trade in trades:
                         # Counterparty buying lifts the MM's ask; selling hits its bid.

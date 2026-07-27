@@ -16,16 +16,52 @@ class OrderFlowSimulator:
     def generate_trades(self, S_true: float, S_stale: float,
                         bid: float, ask: float, dt_days: float,
                         option_type: str = "call",
-                        option_edge: float = None) -> List[Dict]:
+                        option_edge: float = None,
+                        reservation_scale: float = None) -> List[Dict]:
         trades = []
         # Noise traders: Poisson arrivals. lambda_noise is per DAY (README: "λ=8/day × dt"),
         # so dt_days must be in days. Passing an annualized dt here understated arrivals by
         # 252x — 8.0 * (1/252/78) yields ~5.7 noise trades per MONTH instead of per day.
         n_noise = self.rng.poisson(self.lambda_noise * dt_days)
+        half_spread = (ask - bid) / 2.0
         for _ in range(n_noise):
             side  = "buy" if self.rng.random() < 0.5 else "sell"
             size  = int(self.rng.integers(1, self.max_noise_size + 1))
             price = ask if side == "buy" else bid
+
+            # ---- Counterparty reservation price -------------------------------------
+            # ASSUMPTION, NOT A DERIVATION. This is the one place in this model where a
+            # behavioural rule is ASSERTED rather than derived from the dynamics.
+            #
+            # An arriving noise trader is assumed to hold a reservation price
+            # fair_now +/- eps with eps ~ Exponential(reservation_scale), and to trade
+            # only if the quote falls inside it. Under an exponential the fill
+            # probability is exp(-cost / scale), where cost is what the trader gives up
+            # against the contemporaneous fair. The exponential shape is a choice; a
+            # logistic or a truncated normal would give the same qualitative elasticity
+            # with different tail behaviour, and nothing in this model selects between
+            # them.
+            #
+            # Only the SCALE is anchored: it is the option's own price uncertainty over
+            # the holding horizon, |vega| * (xi/2) * sqrt(tau) — the same quantity the
+            # quoter charges for in its vega carry term. The argument is that a
+            # counterparty's willingness to pay away from fair is dispersed by roughly
+            # the amount the price itself moves over that horizon.
+            #
+            # Without this, fill probability is independent of quote width and P&L is
+            # linear and unbounded in a quantity the market maker chooses.
+            if reservation_scale is not None and reservation_scale > 1e-12:
+                edge = 0.0 if option_edge is None else option_edge
+                cost = (half_spread - edge) if side == "buy" else (half_spread + edge)
+                if cost > 0.0:
+                    # Cap the exponent: reservation_scale goes to zero for near-expiry or
+                    # deep-OTM legs (vega -> 0), and cost/scale then overflows. The limit
+                    # is p_fill -> 0, so clamping to a large ratio is the correct value,
+                    # not an approximation.
+                    ratio = min(cost / reservation_scale, 700.0)
+                    if self.rng.random() >= np.exp(-ratio):
+                        continue    # quote outside this trader's reservation price
+
             trades.append({"side": side, "size": size, "price": price, "trader_type": "noise"})
 
         # Informed traders: arrive only when quotes are stale.

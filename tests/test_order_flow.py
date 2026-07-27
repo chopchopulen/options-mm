@@ -150,3 +150,36 @@ class TestOrderFlow:
         )
         informed = [t for t in trades if t["trader_type"] == "informed"]
         assert len(informed) == 1 and informed[0]["side"] == "sell"
+
+    def test_noise_fill_probability_falls_with_quote_width(self):
+        """The reservation price must make noise flow ELASTIC to quote width.
+
+        Without it, fill counts were literally invariant across a 16x width sweep and
+        P&L was linear and unbounded in a quantity the market maker chooses.
+        """
+        def noise_count(half_spread):
+            n = 0
+            for _ in range(4000):
+                ts = self.sim.generate_trades(
+                    S_true=100.0, S_stale=100.0,
+                    bid=10.0 - half_spread, ask=10.0 + half_spread,
+                    dt_days=1.0, option_type="call", option_edge=0.0,
+                    reservation_scale=0.25,
+                )
+                n += len([t for t in ts if t["trader_type"] == "noise"])
+            return n
+
+        tight, wide = noise_count(0.05), noise_count(0.80)
+        assert wide < tight * 0.5, f"tight {tight} vs wide {wide}: flow is not elastic"
+
+    def test_no_reservation_scale_leaves_flow_inelastic(self):
+        # Backwards-compatible path: omitting the scale disables the gate entirely.
+        n_tight = n_wide = 0
+        for _ in range(2000):
+            n_tight += len([t for t in self.sim.generate_trades(
+                S_true=100.0, S_stale=100.0, bid=9.95, ask=10.05, dt_days=1.0) 
+                if t["trader_type"] == "noise"])
+            n_wide += len([t for t in self.sim.generate_trades(
+                S_true=100.0, S_stale=100.0, bid=9.20, ask=10.80, dt_days=1.0)
+                if t["trader_type"] == "noise"])
+        assert abs(n_tight - n_wide) / max(n_tight, 1) < 0.10
