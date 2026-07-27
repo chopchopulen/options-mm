@@ -139,7 +139,9 @@ Two populations of counterparties arrive each 5-minute step:
 
 **Noise traders** arrive Poisson(λ=8/day × dt) with random direction and size 1–5 contracts. They provide the spread revenue.
 
-**Informed traders** exploit quote staleness. The MM prices using `S_stale` (price 2 steps ago); the true price is `S_true`. When `|S_true − S_stale| / S_stale > 0.2%`, an informed trader hits the profitable side of the book (buying cheap calls or selling rich puts). This is the Glosten-Milgrom adverse selection mechanism — the MM takes real losses on informed flow.
+**Informed traders** exploit quote staleness. The MM prices using `S_stale` (price 2 steps ago); the true price is `S_true`. When `|S_true − S_stale| / S_stale > 0.2%`, an informed trader hits the profitable side of the book *for that option type* — buying calls and selling puts when S rises, and the reverse when S falls. (Before the audit the side was chosen from the sign of the underlying move alone, which is correct for calls and backwards for puts.)
+
+This is **not** the Glosten-Milgrom mechanism, despite earlier claims in this document. In Glosten-Milgrom the maker sets bid and ask each equal to the conditional expectation of value given the order direction, so adverse selection is priced into the quote and beliefs update after every trade. `Quoter` has no informed-arrival probability, no conditional expectation, and no Bayesian update; its mid is always the stale fair regardless of what just traded. It is a symmetric risk-loaded quoter. See `audit/FINDINGS.md` finding 13.
 
 ### 6. Spread Formula
 
@@ -179,9 +181,11 @@ The accounting identity `components + residual ≡ mtm_pnl` holds to machine pre
 
 **Why vega/vanna/volga use EOD net moves, not intraday accumulation:**
 
-Theta and gamma are accumulated step-by-step because their P&L depends on the realized price path (actual log-returns and variance). Vega, vanna, and volga use the net SOD→EOD sigma change only. The reason: `sigma_implied` is estimated from a 10-step rolling log-return window. With only 10 samples, step-to-step changes in this estimator are large and noisy — they reflect sampling variance in a tiny window, not actual changes in implied vol. Summing `½ × volga × Δσ_step²` across 78 steps accumulates estimator noise squared, producing a spurious term (~10× the daily MTM P&L) with no relation to the actual book mark. The MTM book is repriced only at SOD and EOD, so only the net `σ_EOD − σ_SOD` move propagates to realized P&L. The intraday oscillations cancel in the book mark. The 21.67% residual is therefore a floor given this vol estimator — not an implementation gap.
+Theta and gamma are accumulated step-by-step because their P&L depends on the realized price path (actual log-returns and variance). Vega, vanna, and volga use the net SOD→EOD sigma change only. The reason: `sigma_implied` is estimated from a 10-step rolling log-return window. With only 10 samples, step-to-step changes in this estimator are large and noisy — they reflect sampling variance in a tiny window, not actual changes in implied vol. Summing `½ × volga × Δσ_step²` across 78 steps accumulates estimator noise squared, producing a spurious term (~10× the daily MTM P&L) with no relation to the actual book mark. The MTM book is repriced only at SOD and EOD, so only the net `σ_EOD − σ_SOD` move propagates to realized P&L. The intraday oscillations cancel in the book mark.
 
-MTM P&L is `(EOD book value − SOD book value) + realized P&L from closes + underlying position P&L`, where book value = BS price × quantity × 100.
+The claim that once stood here — that the 21.67% residual was "a floor given this vol estimator, not an implementation gap" — was wrong, and the audit refuted it. Two implementation defects were inflating the attribution in opposite directions and partly cancelling: the P&L identity substituted an inception-to-date realized gain for a cash flow, and the second-order vol terms carried the wrong sign for Greeks evaluated at the endpoint σ. Measured against an exact reprice of the EOD book, the old expansion erred by $41,071 against a true vol revaluation of $2,967. Both are fixed; see `audit/FINDINGS.md`.
+
+MTM P&L is `(EOD book value − SOD book value) + net cash flow from fills + underlying position P&L`, where book value = BS price × quantity × 100. The middle term must be a **cash flow** — substituting realized P&L omits opening premium entirely.
 
 ---
 
