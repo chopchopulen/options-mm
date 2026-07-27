@@ -62,7 +62,15 @@ class BacktestEngine:
 
         daily_pnl         = []
         daily_attribution = []
-        log_ret_history   = [0.0] * sigma_window
+        # Warm-start the rolling vol estimator at default_sigma, the prior the MM holds
+        # before it has seen any returns. Seeding with zeros made std()==0 at step 0, so
+        # sigma_implied hit the 0.01 floor and the MM quoted, hedged and MARKED ITS BOOK
+        # at 1% vol against a true 20% for the first sigma_window steps.
+        # Alternating +/-a has mean 0 and std exactly a, so the estimator starts at
+        # default_sigma and blends in real returns as the window fills.
+        step_sigma      = bt["default_sigma"] / np.sqrt(TRADING_DAYS * spd)
+        log_ret_history = [step_sigma if i % 2 == 0 else -step_sigma
+                           for i in range(sigma_window)]
         sigma_implied     = bt["default_sigma"]
 
         for day in range(n_days):
