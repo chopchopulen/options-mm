@@ -131,6 +131,9 @@ class BacktestEngine:
                         continue
 
                     fair    = bs_price(S_stale, opt["K"], T_remaining, r, sigma_implied, opt["option_type"])
+                    # Contemporaneous fair: what the option is actually worth at fill time.
+                    # The quote is built off `fair` (stale); the book converges to this.
+                    fair_now = bs_price(S_now, opt["K"], T_remaining, r, sigma_implied, opt["option_type"])
                     g       = gamma(S_stale, opt["K"], T_remaining, r, sigma_implied)
                     v_greek = vega(S_stale, opt["K"], T_remaining, r, sigma_implied)
 
@@ -155,24 +158,31 @@ class BacktestEngine:
                                         ask_size if trade["side"] == "buy" else bid_size)
                         if fill_size == 0:
                             continue
+                        # signed_qty is the MM's position change: + when it buys.
+                        # spread_captured is the GROSS quoted spread, measured against the
+                        # quote-time (stale) fair. adverse_selection is what that stale mark
+                        # cost: the fair has already moved by (fair_now - fair) at fill time,
+                        # and a long MM gains from that move while a short MM loses. Their
+                        # SUM is the MM's true edge against the contemporaneous mark.
+                        # Previously only the gross term was booked, so on an informed fill
+                        # the trade recorded positive revenue while being instantly
+                        # underwater, and the offsetting loss had no component to land in.
                         if trade["side"] == "buy":
                             # Counterparty buys → MM sells at ask
                             inventory.fill_option(opt["K"], opt["T_days"], opt["option_type"],
                                                   "sell", fill_size, ask)
-                            day_spread_fills.append({
-                                "spread_captured": ask - fair,
-                                "size": fill_size,
-                                "contract_size": contract_size,
-                            })
+                            gross_spread, signed_qty = ask - fair, -fill_size
                         else:
                             # Counterparty sells → MM buys at bid
                             inventory.fill_option(opt["K"], opt["T_days"], opt["option_type"],
                                                   "buy", fill_size, bid)
-                            day_spread_fills.append({
-                                "spread_captured": fair - bid,
-                                "size": fill_size,
-                                "contract_size": contract_size,
-                            })
+                            gross_spread, signed_qty = fair - bid, fill_size
+                        day_spread_fills.append({
+                            "spread_captured": gross_spread,
+                            "adverse_selection": (fair_now - fair) * signed_qty / fill_size,
+                            "size": fill_size,
+                            "contract_size": contract_size,
+                        })
 
                 # Update rolling log-return window after quoting/trading (no look-ahead)
                 log_ret = np.log(prices[idx + 1] / prices[idx])
@@ -248,11 +258,20 @@ class BacktestEngine:
                 f["spread_captured"] * f["size"] * f["contract_size"]
                 for f in day_spread_fills
             )
+            # Adverse selection: the cost of quoting off a stale mark. spread_capture is
+            # the gross quoted spread; the two SUM to the MM's edge against the
+            # contemporaneous fair. Splitting them keeps both readable — gross spread is
+            # what the MM asked for, adverse selection is what the market took back.
+            adverse_selection = sum(
+                f["adverse_selection"] * f["size"] * f["contract_size"]
+                for f in day_spread_fills
+            )
             hedge_cost_total = -sum(day_hedge_costs)
-            residual = mtm_pnl - (spread_capture + daily_theta_pnl + daily_gamma_pnl + daily_vega_pnl + daily_vanna_pnl + daily_volga_pnl + hedge_cost_total)
+            residual = mtm_pnl - (spread_capture + adverse_selection + daily_theta_pnl + daily_gamma_pnl + daily_vega_pnl + daily_vanna_pnl + daily_volga_pnl + hedge_cost_total)
 
             attr = {
                 "spread_capture": spread_capture,
+                "adverse_selection": adverse_selection,
                 "theta_pnl":      daily_theta_pnl,
                 "gamma_pnl":      daily_gamma_pnl,
                 "vega_pnl":       daily_vega_pnl,
