@@ -15,7 +15,8 @@ class OrderFlowSimulator:
 
     def generate_trades(self, S_true: float, S_stale: float,
                         bid: float, ask: float, dt_days: float,
-                        option_type: str = "call") -> List[Dict]:
+                        option_type: str = "call",
+                        option_edge: float = None) -> List[Dict]:
         trades = []
         # Noise traders: Poisson arrivals. lambda_noise is per DAY (README: "λ=8/day × dt"),
         # so dt_days must be in days. Passing an annualized dt here understated arrivals by
@@ -32,11 +33,26 @@ class OrderFlowSimulator:
         # the option type: a call gains value when S rises, a put loses it. Deciding the
         # side from the sign of the underlying move alone is correct for calls and exactly
         # backwards for puts.
+        #
+        # A trader that is informed will not knowingly cross a spread wider than its own
+        # edge, so arrival is gated on `abs(edge) > half_spread`. Without that gate 7.2%
+        # of informed fills traded at a certain loss, and — more importantly — fill
+        # probability was completely independent of quote width, which made P&L linear
+        # and unbounded in a quantity the market maker chooses.
+        #
+        # `option_edge` is the edge in DOLLARS (contemporaneous fair minus quote-time
+        # fair, signed for the option). When it is not supplied the gate cannot be
+        # applied, and the side falls back to the sign of the underlying move.
         mispricing = (S_true - S_stale) / S_stale
         if abs(mispricing) > self.staleness_threshold:
             size = int(self.rng.integers(self.min_informed_size, self.max_informed_size + 1))
-            option_edge = mispricing if option_type == "call" else -mispricing
-            if option_edge > 0:
+            if option_edge is None:
+                edge = mispricing if option_type == "call" else -mispricing
+            else:
+                edge = option_edge
+                if abs(edge) <= (ask - bid) / 2.0:
+                    return trades          # not worth crossing; informed stays out
+            if edge > 0:
                 # Option worth more than the MM's stale fair → MM ask is cheap → informed buys
                 trades.append({"side": "buy",  "size": size, "price": ask, "trader_type": "informed"})
             else:

@@ -161,7 +161,8 @@ class BacktestEngine:
 
                     bid, ask = quoter.quote(fair, g, v_greek, d_greek, S_stale, sigma_uncertainty)
                     trades = flow_sim.generate_trades(S_now, S_stale, bid, ask,
-                                                      1.0 / spd, opt["option_type"])
+                                                      1.0 / spd, opt["option_type"],
+                                                      option_edge=fair_now - fair)
 
                     for trade in trades:
                         # Counterparty buying lifts the MM's ask; selling hits its bid.

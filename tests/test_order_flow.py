@@ -123,3 +123,30 @@ class TestOrderFlow:
         assert 0.8 * lam < realized_per_day < 1.2 * lam, (
             f"expected ~{lam} noise arrivals/day, realized {realized_per_day:.2f}"
         )
+
+    def test_informed_stays_out_when_edge_below_half_spread(self):
+        # Edge of $0.05 against a $0.50 half-spread: crossing is a certain loss, so the
+        # informed trader must not arrive even though the staleness trigger has fired.
+        trades = self.sim.generate_trades(
+            S_true=101.0, S_stale=100.0, bid=99.5, ask=100.5, dt_days=1/78,
+            option_type="call", option_edge=0.05,
+        )
+        assert not [t for t in trades if t["trader_type"] == "informed"]
+
+    def test_informed_trades_when_edge_exceeds_half_spread(self):
+        trades = self.sim.generate_trades(
+            S_true=101.0, S_stale=100.0, bid=99.5, ask=100.5, dt_days=1/78,
+            option_type="call", option_edge=2.00,
+        )
+        informed = [t for t in trades if t["trader_type"] == "informed"]
+        assert len(informed) == 1 and informed[0]["side"] == "buy"
+
+    def test_dollar_edge_sets_the_side_directly(self):
+        # A negative dollar edge means the option is worth LESS than the stale fair,
+        # so the informed trader hits the bid regardless of the underlying's direction.
+        trades = self.sim.generate_trades(
+            S_true=101.0, S_stale=100.0, bid=99.5, ask=100.5, dt_days=1/78,
+            option_type="call", option_edge=-2.00,
+        )
+        informed = [t for t in trades if t["trader_type"] == "informed"]
+        assert len(informed) == 1 and informed[0]["side"] == "sell"
