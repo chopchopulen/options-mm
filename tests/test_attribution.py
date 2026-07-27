@@ -22,29 +22,75 @@ def test_attribution_fields_present():
         assert key in result
 
 
-def test_components_plus_residual_equal_total():
-    # total is defined as mtm_pnl; residual closes the gap exactly
-    attr = PnLAttributor()
-    result = attr.compute(
-        spread_fills=[{"spread_captured": 0.05, "size": 5, "contract_size": 100}],
-        portfolio_theta=-3.0,
-        portfolio_gamma=0.015,
-        portfolio_vega=80.0,
-        portfolio_vanna=0.0,
-        portfolio_volga=0.0,
-        S=100.0,
-        realized_variance=0.0005,
-        implied_variance=0.0004,
-        delta_sigma_implied=0.001,
-        hedge_costs=[1.20, 0.80],
-        mtm_pnl=42.0,
-        dt=1/252,
-    )
-    component_sum = (result["spread_capture"] + result["theta_pnl"]
-                     + result["gamma_pnl"] + result["vega_pnl"]
-                     + result["vanna_pnl"] + result["volga_pnl"]
-                     + result["hedge_cost"] + result["residual"])
-    assert abs(component_sum - result["total"]) < 1e-10
+def test_engine_pnl_matches_independent_cash_and_mark_ledger():
+    """The engine's reported P&L must equal an independently built cash+mark ledger.
+
+    This replaces a tautological test that asserted
+        sum(components) + residual == total
+    where residual is DEFINED as total - sum(components). That identity holds for any
+    inputs, including arbitrarily wrong ones, and it passed unchanged while the engine
+    was overstating total P&L by 48%.
+
+    This assertion has content: it reconstructs portfolio value from first principles as
+    cash + option book mark + underlying mark, using only fill-by-fill cash flows, and
+    compares it against what the engine reports. It exercises BacktestEngine, which is
+    the code that actually runs -- src/pnl/attribution.py is not imported by the engine.
+    """
+    import configs.default as cfg
+    from src.mm.inventory import Inventory
+    from src.backtest.engine import BacktestEngine
+
+    captured = {}
+    original_book_value = BacktestEngine._book_value
+    original_init = Inventory.__init__
+
+    def recording_book_value(options, inventory, S, sigma, r, days_elapsed, contract_size):
+        value = original_book_value(options, inventory, S, sigma, r, days_elapsed, contract_size)
+        captured["book"] = value
+        return value
+
+    def recording_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        captured["inventory"] = self
+
+    BacktestEngine._book_value = staticmethod(recording_book_value)
+    Inventory.__init__ = recording_init
+    try:
+        for seed in (42, 3, 7):
+            captured.clear()
+            results = BacktestEngine(cfg, seed=seed).run()
+            inventory = captured["inventory"]
+            final_spot = results["prices"][cfg.BACKTEST["n_days"] * cfg.BACKTEST["steps_per_day"]]
+            # Terminal portfolio value, built only from cash flows and marks.
+            ledger = (captured["book"]
+                      + inventory.cash
+                      + inventory.underlying_position * final_spot)
+            assert abs(results["total_pnl"] - ledger) < 1e-6, (
+                f"seed {seed}: engine reported {results['total_pnl']:.4f}, "
+                f"independent cash+mark ledger says {ledger:.4f}"
+            )
+    finally:
+        BacktestEngine._book_value = staticmethod(original_book_value)
+        Inventory.__init__ = original_init
+
+
+def test_opening_trade_premium_enters_pnl():
+    """Selling an option must move P&L by the premium received.
+
+    The pre-fix engine substituted realized_pnl (an inception-to-date gain) for cash
+    flow, so an opening trade contributed exactly zero and the premium vanished.
+    """
+    from src.mm.inventory import Inventory
+
+    inventory = Inventory(contract_size=100)
+    inventory.fill_option(450.0, 30, "call", "sell", 5, 3.00)
+    assert inventory.cash == 1500.0, "premium received must land in the cash ledger"
+    assert inventory.realized_pnl == 0.0, "no position was closed, so no realized gain"
+
+    # Buying it back 10 cents lower nets $50 of cash across the round trip.
+    inventory.fill_option(450.0, 30, "call", "buy", 5, 2.90)
+    assert abs(inventory.cash - 50.0) < 1e-10
+    assert inventory.get_option_position(450.0, 30, "call") == 0
 
 
 def test_short_call_theta_pnl_positive():
