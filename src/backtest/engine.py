@@ -2,7 +2,7 @@ import numpy as np
 from src.market.underlying import HestonSimulator
 from src.market.order_flow import OrderFlowSimulator
 from src.pricing.black_scholes import bs_price
-from src.greeks.analytical import gamma, vega
+from src.greeks.analytical import delta, gamma, vega
 from src.greeks.portfolio import portfolio_greeks
 from src.mm.quoter import Quoter
 from src.mm.inventory import Inventory
@@ -58,8 +58,18 @@ class BacktestEngine:
         # trade, not an OFFSETTING one, so it likely UNDERSTATES the true holding period
         # and the resulting spread is, if anything, too narrow.
         tau_hold  = (spd / self.cfg.ORDER_FLOW["lambda_noise"]) / (TRADING_DAYS * spd)
+        of        = self.cfg.ORDER_FLOW
+        flow      = dict(
+            staleness_steps     = staleness,
+            staleness_threshold = of["staleness_threshold"],
+            dt_step             = dt,
+            steps_per_day       = spd,
+            lambda_noise        = of["lambda_noise"],
+            mean_informed_size  = (of["min_informed_size"] + of["max_informed_size"]) / 2.0,
+            mean_noise_size     = (1 + of["max_noise_size"]) / 2.0,
+        )
         quoter    = Quoter(**self.cfg.QUOTER, holding_horizon=tau_hold,
-                           vol_of_vol=self.cfg.HESTON["xi"])
+                           vol_of_vol=self.cfg.HESTON["xi"], flow=flow)
         inventory = Inventory(contract_size=self.cfg.QUOTER["contract_size"])
         hedger    = DeltaHedger(**self.cfg.HEDGER)
         risk      = RiskLimits(**self.cfg.RISK)
@@ -136,6 +146,7 @@ class BacktestEngine:
                     fair_now = bs_price(S_now, opt["K"], T_remaining, r, sigma_implied, opt["option_type"])
                     g       = gamma(S_stale, opt["K"], T_remaining, r, sigma_implied)
                     v_greek = vega(S_stale, opt["K"], T_remaining, r, sigma_implied)
+                    d_greek = delta(S_stale, opt["K"], T_remaining, r, sigma_implied, opt["option_type"])
 
                     leg_pos = inventory.get_option_position(opt["K"], opt["T_days"], opt["option_type"])
 
@@ -148,7 +159,7 @@ class BacktestEngine:
                     if bid_size == 0 and ask_size == 0:
                         continue
 
-                    bid, ask = quoter.quote(fair, g, v_greek, S_stale, sigma_uncertainty)
+                    bid, ask = quoter.quote(fair, g, v_greek, d_greek, S_stale, sigma_uncertainty)
                     trades = flow_sim.generate_trades(S_now, S_stale, bid, ask,
                                                       1.0 / spd, opt["option_type"])
 
