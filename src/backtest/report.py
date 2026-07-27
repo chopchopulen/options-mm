@@ -5,7 +5,22 @@ import matplotlib.gridspec as gridspec
 from typing import Dict, List
 
 
-def compute_sharpe(daily_pnl: List[float], risk_free_daily: float = 0.02 / 252) -> float:
+def compute_pnl_signal_to_noise(daily_pnl: List[float],
+                                risk_free_daily: float = 0.02 / 252) -> float:
+    """Annualized mean/std ratio of the daily DOLLAR P&L stream.
+
+    DELIBERATELY NOT NAMED "sharpe". This is not a Sharpe ratio: there is no capital base
+    anywhere in this repo, so the series is dollars, not returns. The statistic is
+    invariant to leverage and to book size -- double every position and it does not move.
+    A percentage drawdown is undefinable here for the same reason.
+
+    The risk_free_daily subtraction is retained for continuity but is dimensionally
+    incoherent (a rate minus a dollar amount) and worth 1.3e-07. np.std uses ddof=0,
+    which inflates the result relative to the sample statistic.
+
+    See docs/FINAL_NUMBERS.md. Renamed so that a variable called "sharpe" cannot leak
+    into a future writeup and be read as a risk-adjusted return.
+    """
     arr    = np.array(daily_pnl)
     excess = arr - risk_free_daily
     if np.std(excess) == 0:
@@ -23,14 +38,14 @@ def _max_drawdown(pnl: List[float]) -> float:
 def print_summary(results: Dict) -> None:
     attrs  = results["daily_attribution"]
     pnl    = results["daily_pnl"]
-    sharpe = compute_sharpe(pnl)
+    pnl_snr = compute_pnl_signal_to_noise(pnl)
 
     df = pd.DataFrame(attrs)
     print("\n" + "="*60)
     print("OPTIONS MARKET MAKER — BACKTEST SUMMARY")
     print("="*60)
     print(f"  Total P&L:          ${results['total_pnl']:>10.2f}")
-    print(f"  Sharpe Ratio:       {sharpe:>10.3f}")
+    print(f"  P&L signal/noise:   {pnl_snr:>10.3f}   (NOT a Sharpe ratio — no capital base)")
     print(f"  Win Rate (days):    {np.mean(np.array(pnl) > 0)*100:>9.1f}%")
     print(f"  Max Drawdown:       ${_max_drawdown(pnl):>10.2f}")
     print()

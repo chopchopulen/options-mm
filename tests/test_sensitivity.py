@@ -29,8 +29,8 @@ class TestSensitivityCsvCreated:
             "hedge_threshold",
             "base_spread_bps",
             "informed_threshold",
-            "mean_sharpe",
-            "std_sharpe",
+            "mean_pnl_snr",
+            "std_pnl_snr",
             "mean_total_pnl",
             "mean_hedge_cost",
             "mean_spread_capture",
@@ -42,13 +42,13 @@ class TestSensitivityCsvCreated:
 
 class TestSensitivityReturnsDataframe:
     def test_sensitivity_returns_dataframe(self, tmp_path, monkeypatch):
-        """run_sensitivity should return a pandas DataFrame with mean_sharpe column."""
+        """run_sensitivity should return a pandas DataFrame with mean_pnl_snr column."""
         monkeypatch.chdir(tmp_path)
 
         result = run_sensitivity(seeds=[42], grid_override=SMALL_GRID)
 
         assert isinstance(result, pd.DataFrame), "Return value should be a DataFrame"
-        assert "mean_sharpe" in result.columns, "DataFrame must have a mean_sharpe column"
+        assert "mean_pnl_snr" in result.columns, "DataFrame must have a mean_pnl_snr column"
         assert len(result) == len(SMALL_GRID), (
             f"Expected {len(SMALL_GRID)} rows, got {len(result)}"
         )
@@ -61,12 +61,12 @@ class TestSensitivityBestComboIsValid:
         small_grid = [(10, 10, 0.001), (25, 20, 0.002), (50, 50, 0.005)]
         df = run_sensitivity(seeds=[42, 43], grid_override=small_grid)
 
-        # Sorted descending by mean_sharpe, so first row is best
+        # Sorted descending by mean_pnl_snr, so first row is best
         best = df.iloc[0]
 
         metric_cols = [
-            "mean_sharpe",
-            "std_sharpe",
+            "mean_pnl_snr",
+            "std_pnl_snr",
             "mean_total_pnl",
             "mean_hedge_cost",
             "mean_spread_capture",

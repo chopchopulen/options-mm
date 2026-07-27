@@ -1,5 +1,11 @@
 # Options Market Making Simulator
 
+> **⚠️ READ `docs/FINAL_NUMBERS.md` BEFORE QUOTING ANY NUMBER FROM THIS REPO.**
+> A blind audit found 20 defects, including a P&L identity that overstated returns by 48% and a
+> load-bearing test that asserted an accounting identity against its own definition. Much of the
+> prose below predates that audit. Corrected sections are marked inline; `docs/FINAL_NUMBERS.md`
+> is authoritative on what is claimable, what is retired, and what remains open.
+
 A production-quality options market making simulator in Python. The system quotes a multi-strike, multi-expiry options book on a Heston stochastic-volatility underlying, models adverse selection from informed traders, delta-hedges in real time, and decomposes daily P&L into five economic components — all validated by 55 unit tests.
 
 ---
@@ -69,24 +75,24 @@ python3 src/backtest/sensitivity.py    # parameter grid search, saves results/se
 ============================================================
 OPTIONS MARKET MAKER — BACKTEST SUMMARY
 ============================================================
-  Total P&L:          $  33837.79
-  Sharpe Ratio:            1.849
-  Win Rate (days):         46.7%
-  Max Drawdown:       $  35111.78
+  Total P&L:          $ 255353.47
+  P&L signal/noise:        9.315   (NOT a Sharpe ratio — no capital base)
+  Win Rate (days):         70.0%
+  Max Drawdown:       $  18441.33
 
   P&L Attribution (cumulative):
-    spread_capture         $  22315.22
-    theta_pnl              $ -12002.57
-    gamma_pnl              $   2006.81
-    vega_pnl               $  21597.79
-    vanna_pnl              $   -562.08
-    volga_pnl              $  23002.63
-    hedge_cost             $ -29851.80
-    residual               $   7331.79
-
-  Residual: $7331.79  (21.67% of total)  ✓
+    spread_capture         $1256938.06
+    adverse_selection      $-421284.69
+    ...
 ============================================================
 ```
+
+> **⚠️ The P&L LEVEL above is not a result.** With noise flow inelastic to quote width, P&L rises
+> monotonically with the spread we choose — the level is not identified without a model of
+> competition. See `docs/FINAL_NUMBERS.md`. The previous sample output in this README showed
+> **Total P&L $33,837.79 / Sharpe 1.849 / residual 21.67%**; all three are retired. That P&L was
+> overstated by 48% by an accounting defect, 89% of it was a volatility-initialization artifact,
+> and "Sharpe" is not a Sharpe ratio.
 
 The simulation saves `backtest_results.png` with five panels: cumulative P&L, daily attribution stacked bar, Heston price path, spread capture vs. hedge cost, and Gamma vs. Theta P&L.
 
@@ -275,7 +281,24 @@ pytest tests/ -v   # all 66 pass
 
 ## Parameter Sensitivity Analysis
 
-Run a 27-combo grid search over key parameters to find the regime that maximizes out-of-sample Sharpe:
+> **⚠️ RETIRED RESULT. The ranking carries no demonstrated information.**
+>
+> The grid searches 27 combinations against 5 shared seeds and prints a "Best combo". Under
+> the null that every combination has identical true performance, `E[max of 27]` exceeds the
+> truth by **+1.319** (ρ=0) to **+0.591** (ρ=0.8) given the measured per-combo standard error
+> of 0.661. The observed best-minus-mean was **+0.670**, and the across-combo standard
+> deviation (0.4913) is *smaller* than the single-combo standard error (0.6606).
+>
+> **The entire observed spread from best to worst is consistent with no effect at all.** Acting
+> on the ranking would import roughly +0.7 to +1.3 of apparent performance that does not exist,
+> validated against a benchmark whose own standard error is ±2.9. Do not quote the "Best combo"
+> line, and do not tune parameters to it. See `docs/FINAL_NUMBERS.md` defect #18.
+>
+> `results/sensitivity.csv` is a pre-audit artifact: its ranking is retired and its column names
+> predate the `sharpe` → `pnl_snr` rename. Kept for provenance only.
+
+The grid remains useful as a *robustness* check — showing that results do not depend on a
+knife-edge parameter choice — not as an optimizer.
 
 ```bash
 python3 src/backtest/sensitivity.py   # ~25 min, saves results/sensitivity.csv
@@ -286,18 +309,64 @@ Grid:
 - `base_spread_bps`: [10, 20, 50] bps — minimum quote width
 - `informed_threshold`: [0.001, 0.002, 0.005] — staleness gap before informed traders arrive
 
-Each combo is averaged across 5 random seeds and ranked by mean Sharpe.
+Each combo is averaged across 5 random seeds. Ranked output is printed but must not be read as
+a recommendation.
 
 ---
 
 ## Resume Bullets
 
+> **⚠️ These bullets were written before the audit. Four of the five state things the audit
+> disproved. They are kept for provenance with corrections attached — do not reuse them as
+> written. See `docs/FINAL_NUMBERS.md` for what is actually claimable.**
+
 > Built a production-quality options market making simulator in Python: implemented Black-Scholes, binomial tree, and Monte Carlo (antithetic variates) pricers validated against put-call parity and inter-model convergence tests.
+
+**Holds up.** Inter-model convergence is real and measured: CRR(200) within $0.022, MC(400k)
+within $0.035, Heston-CF within $0.0002. One caveat — the *Heston* put-call parity test was a
+tautology (the put branch is defined as `call − (S − Ke^−rT)`), so it validated nothing until
+it was replaced by an independent zero-vol-of-vol check. Defect #15.
 
 > Implemented a real-time Greeks engine (Delta, Gamma, Vega, Theta, Vanna, Volga) analytically and via finite differences, with agreement verified to 4 decimal places; aggregated portfolio-level Greeks across a multi-strike, multi-expiry option book.
 
+**Holds up, and understates itself.** Measured agreement is 1e-07 or better off-ATM, not 4
+decimal places. This is the one component that audited fully clean.
+
 > Modeled realistic adverse selection using a two-population order flow model (Glosten-Milgrom-inspired): informed traders exploit quote staleness from a Heston stochastic-vol underlying, making the simulation genuinely risky rather than trivially spread-collecting.
+
+**Wrong on every clause at the time of writing.** It was not two-population — `lambda_noise` was
+applied against an annualized `dt`, giving ~5.7 noise trades per *month* and **zero observed in
+every seed** (#5). It was not Glosten-Milgrom — no informed-arrival probability, no conditional
+expectation, no Bayesian update (#20 in `audit/FINDINGS.md`). Informed traders did not exploit
+quote staleness, they read `prices[idx+1]`, the *next bar*, and won 334 of 334 fills (#4). And it
+*was* trivially spread-collecting: fill probability was completely independent of quote width, so
+P&L was exactly linear and unbounded in the spread (#11). A derived GM adverse-selection charge
+exists now, but the quoter is still not a GM maker.
 
 > Built second-order P&L attribution decomposing daily returns into spread capture, theta, gamma, vega, vanna, and volga — with a hard closure test asserting components sum to mark-to-market P&L to machine precision; adding vanna/volga reduced the unexplained residual from 88% to 22%.
 
+**The "hard closure test" is the keystone defect of this project.** It asserted
+`Σcomponents + residual == total` where the engine *defines* `residual := total − Σcomponents`.
+It is an identity against itself, passes for any inputs including arbitrarily wrong ones, and it
+is why the other nineteen defects survived a green 70-test suite (#14). The "88% → 22%" figure
+never reproduced at any commit, and the residual was separately being measured against an
+unstable denominator. The attribution identity does close now, at 2.50% of gross flow — but on a
+test that can actually fail.
+
 > Ran a parameter sensitivity grid search (27 combos × 5 seeds) over hedge threshold, spread width, and adverse-selection threshold; ranked results by mean Sharpe and exported to CSV for strategy optimization.
+
+**Retired.** The ranking carries no demonstrated information (#18, above), and "mean Sharpe" is
+not a Sharpe ratio — there is no capital base anywhere in this repo, so the statistic is an
+annualized mean/std ratio of a dollar P&L stream, invariant to leverage and book size (#20). The
+metric has been renamed `pnl_snr` in code so it cannot leak into a future writeup as a
+risk-adjusted return.
+
+### An honest replacement bullet
+
+> Audited a stochastic options market-making simulator and found 20 defects that a green
+> 70-test suite had not caught, including a P&L identity that overstated returns by 48%, a
+> volatility-initialization artifact responsible for 89% of reported P&L, and a load-bearing
+> test that asserted an accounting identity against its own definition. Rebuilt the P&L
+> attribution to close at 2.5% of gross flow, derived the quoted spread from inventory carry
+> cost and a Glosten-Milgrom break-even condition with no fitted coefficients, and established
+> that the simulator's P&L level is not identified without a model of competition.
