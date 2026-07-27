@@ -127,15 +127,15 @@ class BacktestEngine:
                     g       = gamma(S_stale, opt["K"], T_remaining, r, sigma_implied)
                     v_greek = vega(S_stale, opt["K"], T_remaining, r, sigma_implied)
 
-                    leg_pos = abs(inventory.get_option_position(opt["K"], opt["T_days"], opt["option_type"]))
+                    leg_pos = inventory.get_option_position(opt["K"], opt["T_days"], opt["option_type"])
 
-                    size = risk.adjusted_quote_size(
+                    bid_size, ask_size = risk.adjusted_quote_sizes(
                         desired_size=bt["desired_quote_size"],
                         portfolio_gamma=port_g["gamma"],
                         portfolio_vega=port_g["vega"],
                         current_leg_position=leg_pos,
                     )
-                    if size == 0:
+                    if bid_size == 0 and ask_size == 0:
                         continue
 
                     bid, ask = quoter.quote(fair, g, v_greek, sigma_uncertainty)
@@ -143,7 +143,11 @@ class BacktestEngine:
                                                       1.0 / spd, opt["option_type"])
 
                     for trade in trades:
-                        fill_size = min(trade["size"], size)
+                        # Counterparty buying lifts the MM's ask; selling hits its bid.
+                        fill_size = min(trade["size"],
+                                        ask_size if trade["side"] == "buy" else bid_size)
+                        if fill_size == 0:
+                            continue
                         if trade["side"] == "buy":
                             # Counterparty buys → MM sells at ask
                             inventory.fill_option(opt["K"], opt["T_days"], opt["option_type"],
