@@ -23,9 +23,12 @@ ORDER_FLOW = dict(
 )
 
 QUOTER = dict(
+    # base_spread is a per-share half-spread. On the ATM 30d leg (~$12.91 premium) it is
+    # 0.4% of premium, which is roughly the real SPY NBBO half-width — this parameter was
+    # already correctly scaled; the coefficients that used to sit beside it were not.
+    # The gamma and vega loadings are no longer free coefficients: they are derived in
+    # the engine as the cost of carrying inventory over the holding horizon tau.
     base_spread=0.05,
-    gamma_coeff=2.0,
-    vega_coeff=0.002,
     contract_size=100,
 )
 

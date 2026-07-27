@@ -62,8 +62,6 @@ def _make_cfg(hedge_threshold: float, base_spread: float, informed_threshold: fl
     )
     cfg.QUOTER = dict(
         base_spread=base_spread,
-        gamma_coeff=2.0,
-        vega_coeff=0.002,
         contract_size=100,
     )
     cfg.HEDGER = dict(

@@ -52,7 +52,14 @@ class BacktestEngine:
         prices, variances = heston.simulate(n_steps=total_steps, dt=dt)
 
         flow_sim  = OrderFlowSimulator(**self.cfg.ORDER_FLOW, seed=self.seed + 1)
-        quoter    = Quoter(**self.cfg.QUOTER)
+        # Inventory holding horizon tau: the expected wait for a trade, derived from the
+        # arrival rate rather than chosen. lambda_noise is per day over `spd` steps, so
+        # the expected inter-arrival is spd/lambda steps. NOTE this is the wait for ANY
+        # trade, not an OFFSETTING one, so it likely UNDERSTATES the true holding period
+        # and the resulting spread is, if anything, too narrow.
+        tau_hold  = (spd / self.cfg.ORDER_FLOW["lambda_noise"]) / (TRADING_DAYS * spd)
+        quoter    = Quoter(**self.cfg.QUOTER, holding_horizon=tau_hold,
+                           vol_of_vol=self.cfg.HESTON["xi"])
         inventory = Inventory(contract_size=self.cfg.QUOTER["contract_size"])
         hedger    = DeltaHedger(**self.cfg.HEDGER)
         risk      = RiskLimits(**self.cfg.RISK)
@@ -138,7 +145,7 @@ class BacktestEngine:
                     if bid_size == 0 and ask_size == 0:
                         continue
 
-                    bid, ask = quoter.quote(fair, g, v_greek, sigma_uncertainty)
+                    bid, ask = quoter.quote(fair, g, v_greek, S_stale, sigma_uncertainty)
                     trades = flow_sim.generate_trades(S_now, S_stale, bid, ask,
                                                       1.0 / spd, opt["option_type"])
 
