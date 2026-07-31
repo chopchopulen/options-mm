@@ -1,9 +1,11 @@
 import numpy as np
 from src.market.underlying import HestonSimulator
 from src.market.order_flow import OrderFlowSimulator
+from src.market.competition import CompetitiveQuotes
 from src.pricing.black_scholes import bs_price
-from src.greeks.analytical import gamma, vega
+from src.greeks.analytical import delta, gamma, vega
 from src.greeks.portfolio import portfolio_greeks
+from src.pricing.vol_surface import HestonVolSurface
 from src.mm.quoter import Quoter
 from src.mm.inventory import Inventory
 from src.mm.hedger import DeltaHedger
@@ -28,13 +30,22 @@ class BacktestEngine:
         return opts
 
     @staticmethod
-    def _book_value(options, inventory, S, sigma, r, days_elapsed, contract_size):
+    def _book_value(options, inventory, S, atm_level, r, days_elapsed, contract_size,
+                    surface=None):
+        """Mark the book. Each leg is valued at ITS OWN implied vol.
+
+        `atm_level` is the maker's view of the ATM level; `surface` supplies the skew and
+        term-structure shape around it. Marking every strike at one flat vol -- the
+        previous behaviour -- systematically misprices the wings.
+        """
         total = 0.0
         for o in options:
             T_o = max(0.0001, (o["T_days"] / TRADING_DAYS) - (days_elapsed / TRADING_DAYS))
             qty = inventory.get_option_position(o["K"], o["T_days"], o["option_type"])
             if qty != 0:
-                price = bs_price(S, o["K"], T_o, r, sigma, o["option_type"])
+                sig = (atm_level if surface is None
+                       else surface.quoted_iv(S, o["K"], T_o, atm_level))
+                price = bs_price(S, o["K"], T_o, r, sig, o["option_type"])
                 total += qty * price * contract_size
         return total
 
@@ -47,12 +58,56 @@ class BacktestEngine:
         sigma_window = bt["sigma_uncertainty_window"]
         staleness = bt["quote_staleness_steps"]
 
+        H = self.cfg.HESTON
+        H_kappa, H_theta = H["kappa"], H["theta"]
+
         heston = HestonSimulator(**self.cfg.HESTON, seed=self.seed)
         total_steps = n_days * spd
         prices, variances = heston.simulate(n_steps=total_steps, dt=dt)
 
+        # Closed-form ATM implied vol given the CURRENT instantaneous variance. Under
+        # Heston the expected average variance over [0, T] is
+        #     E[v_bar] = theta + (v_t - theta) * (1 - exp(-kappa T)) / (kappa T)
+        # and ATM implied vol is its square root. Derived from the variance dynamics
+        # already in the model -- no fitted constants. Reduces to sqrt(theta) when
+        # v_t == theta, and to sqrt(v_t) as T -> 0.
+        def true_atm_iv(v_t, T):
+            kT = H_kappa * max(T, 1e-9)
+            v_bar = H_theta + (v_t - H_theta) * (1.0 - np.exp(-kT)) / kT
+            return float(np.sqrt(max(v_bar, 1e-12)))
+
+        # Implied-vol surface. SHAPE (skew + term structure) comes from the Heston
+        # characteristic function at the model's own parameters; the maker supplies only
+        # the ATM LEVEL. Built once — the shape does not depend on the level estimate.
+        vol_surface = HestonVolSurface(
+            S_ref=H["S0"], r=r, v0=H["v0"], kappa=H["kappa"],
+            theta=H["theta"], xi=H["xi"], rho=H["rho"],
+        )
+
+        # Competing quotes, sampled from real observed SPY spreads. Off unless a cached
+        # chain exists; never silently falls back to an invented competitive level.
+        competition = CompetitiveQuotes.from_cache() if bt.get("use_competition", False) else None
+        comp_rng    = np.random.default_rng(self.seed + 2)
+
         flow_sim  = OrderFlowSimulator(**self.cfg.ORDER_FLOW, seed=self.seed + 1)
-        quoter    = Quoter(**self.cfg.QUOTER)
+        # Inventory holding horizon tau: the expected wait for a trade, derived from the
+        # arrival rate rather than chosen. lambda_noise is per day over `spd` steps, so
+        # the expected inter-arrival is spd/lambda steps. NOTE this is the wait for ANY
+        # trade, not an OFFSETTING one, so it likely UNDERSTATES the true holding period
+        # and the resulting spread is, if anything, too narrow.
+        tau_hold  = (spd / self.cfg.ORDER_FLOW["lambda_noise"]) / (TRADING_DAYS * spd)
+        of        = self.cfg.ORDER_FLOW
+        flow      = dict(
+            staleness_steps     = staleness,
+            staleness_threshold = of["staleness_threshold"],
+            dt_step             = dt,
+            steps_per_day       = spd,
+            lambda_noise        = of["lambda_noise"],
+            mean_informed_size  = (of["min_informed_size"] + of["max_informed_size"]) / 2.0,
+            mean_noise_size     = (1 + of["max_noise_size"]) / 2.0,
+        )
+        quoter    = Quoter(**self.cfg.QUOTER, holding_horizon=tau_hold,
+                           vol_of_vol=self.cfg.HESTON["xi"], flow=flow)
         inventory = Inventory(contract_size=self.cfg.QUOTER["contract_size"])
         hedger    = DeltaHedger(**self.cfg.HEDGER)
         risk      = RiskLimits(**self.cfg.RISK)
@@ -62,7 +117,15 @@ class BacktestEngine:
 
         daily_pnl         = []
         daily_attribution = []
-        log_ret_history   = [0.0] * sigma_window
+        # Warm-start the rolling vol estimator at default_sigma, the prior the MM holds
+        # before it has seen any returns. Seeding with zeros made std()==0 at step 0, so
+        # sigma_implied hit the 0.01 floor and the MM quoted, hedged and MARKED ITS BOOK
+        # at 1% vol against a true 20% for the first sigma_window steps.
+        # Alternating +/-a has mean 0 and std exactly a, so the estimator starts at
+        # default_sigma and blends in real returns as the window fills.
+        step_sigma      = bt["default_sigma"] / np.sqrt(TRADING_DAYS * spd)
+        log_ret_history = [step_sigma if i % 2 == 0 else -step_sigma
+                           for i in range(sigma_window)]
         sigma_implied     = bt["default_sigma"]
 
         for day in range(n_days):
@@ -71,8 +134,9 @@ class BacktestEngine:
             sigma_sod        = sigma_implied
 
             S_sod = prices[day * spd]
-            sod_book = self._book_value(options, inventory, S_sod, sigma_implied, r, day, contract_size)
-            realized_pnl_sod = inventory.realized_pnl
+            sod_book = self._book_value(options, inventory, S_sod, sigma_implied, r, day,
+                                        contract_size, vol_surface)
+            cash_sod = inventory.cash
             underlying_sod = inventory.underlying_position * S_sod
 
             # Initialize intraday attribution accumulators (theta/gamma: step-by-step; vega/vanna/volga: set at EOD)
@@ -81,13 +145,28 @@ class BacktestEngine:
 
             for step in range(spd):
                 idx     = day * spd + step
-                S_true  = prices[idx + 1]
-                S_stale = prices[max(0, idx + 1 - staleness)]
+                # Quote time is the START of the step. S_now is the contemporaneous price:
+                # the best information ANY participant has right now. S_stale is what the MM
+                # is still quoting off, `staleness` steps behind. The informed trader's edge
+                # is exactly that gap — the MM's own lag — and nothing more.
+                # S_end is the price at the END of the step, used only after the step's
+                # trading is done (hedging, end-of-step Greeks, realized variance).
+                S_now   = prices[idx]
+                S_stale = prices[max(0, idx - staleness)]
+                S_end   = prices[idx + 1]
 
                 # Compute sigma_implied from existing history (no look-ahead)
                 sigma_implied = float(np.std(log_ret_history) * np.sqrt(TRADING_DAYS * spd))
                 sigma_implied = max(sigma_implied, 0.01)
                 sigma_uncertainty = sigma_implied
+
+                # Vol-informed signal. v_now is the CONTEMPORANEOUS variance -- the same
+                # information discipline as S_now, no look-ahead. vol_threshold is the
+                # standard error of the maker's own estimator, sigma/sqrt(2*window): a
+                # signal smaller than that is indistinguishable from sampling noise, so a
+                # rational informed trader would not act on it.
+                v_now = variances[idx]
+                vol_threshold = sigma_implied / np.sqrt(2.0 * sigma_window)
 
                 # Compute portfolio greeks once per step
                 all_pos = []
@@ -97,8 +176,8 @@ class BacktestEngine:
                         continue
                     qty = inventory.get_option_position(o["K"], o["T_days"], o["option_type"])
                     all_pos.append({
-                        "S": S_stale, "K": o["K"], "T": T_o,
-                        "r": r, "sigma": sigma_implied,
+                        "S": S_stale, "K": o["K"], "T": T_o, "r": r,
+                        "sigma": vol_surface.quoted_iv(S_stale, o["K"], T_o, sigma_implied),
                         "option_type": o["option_type"], "quantity": qty,
                     })
                 port_g = portfolio_greeks(all_pos, contract_size)
@@ -108,44 +187,109 @@ class BacktestEngine:
                     if T_remaining <= 0:
                         continue
 
-                    fair    = bs_price(S_stale, opt["K"], T_remaining, r, sigma_implied, opt["option_type"])
-                    g       = gamma(S_stale, opt["K"], T_remaining, r, sigma_implied)
-                    v_greek = vega(S_stale, opt["K"], T_remaining, r, sigma_implied)
+                    # This leg's own implied vol: the maker's ATM level wearing the
+                    # surface's skew. The surface is STICKY-DELTA — it is a function of
+                    # K/S — so a spot move re-prices the leg through the skew as well as
+                    # through delta. That coupling is exactly what vanna is meant to
+                    # capture, and it is real risk a flat-vol maker cannot see.
+                    sig_leg = vol_surface.quoted_iv(S_stale, opt["K"], T_remaining, sigma_implied)
+                    sig_now = vol_surface.quoted_iv(S_now,   opt["K"], T_remaining, sigma_implied)
 
-                    leg_pos = abs(inventory.get_option_position(opt["K"], opt["T_days"], opt["option_type"]))
+                    fair    = bs_price(S_stale, opt["K"], T_remaining, r, sig_leg, opt["option_type"])
+                    # Contemporaneous fair: what the option is actually worth at fill time,
+                    # at the contemporaneous spot AND the skew that spot implies.
+                    fair_now = bs_price(S_now, opt["K"], T_remaining, r, sig_now, opt["option_type"])
+                    # TRUE fair: contemporaneous spot AND the vol the market is actually
+                    # at, not the maker's lagging estimate of it. The gap between fair_now
+                    # and fair_true is what the vol-informed population takes.
+                    sig_true = vol_surface.quoted_iv(S_now, opt["K"], T_remaining,
+                                                     true_atm_iv(v_now, T_remaining))
+                    fair_true = bs_price(S_now, opt["K"], T_remaining, r, sig_true,
+                                         opt["option_type"])
+                    g       = gamma(S_stale, opt["K"], T_remaining, r, sig_leg)
+                    v_greek = vega(S_stale, opt["K"], T_remaining, r, sig_leg)
+                    d_greek = delta(S_stale, opt["K"], T_remaining, r, sig_leg, opt["option_type"])
 
-                    size = risk.adjusted_quote_size(
+                    leg_pos = inventory.get_option_position(opt["K"], opt["T_days"], opt["option_type"])
+
+                    bid_size, ask_size = risk.adjusted_quote_sizes(
                         desired_size=bt["desired_quote_size"],
                         portfolio_gamma=port_g["gamma"],
                         portfolio_vega=port_g["vega"],
                         current_leg_position=leg_pos,
                     )
-                    if size == 0:
+                    if bid_size == 0 and ask_size == 0:
                         continue
 
-                    bid, ask = quoter.quote(fair, g, v_greek, sigma_uncertainty)
-                    trades = flow_sim.generate_trades(S_true, S_stale, bid, ask, dt)
+                    # Competition gates ALL flow -- informed and noise alike -- because a
+                    # counterparty takes the best price available regardless of why it is
+                    # trading. T_remaining is in trading-year units; the empirical buckets
+                    # are in calendar days.
+                    if competition is not None and not competition.wins_flow(
+                        own_half_spread=ask - fair, premium=fair,
+                        moneyness=opt["K"] / S_stale,
+                        days_to_exp=T_remaining * 365.0, rng=comp_rng,
+                    ):
+                        continue
+
+                    bid, ask = quoter.quote(fair, g, v_greek, d_greek, S_stale, sig_leg)
+                    # Reservation scale: the option's own price uncertainty over the
+                    # holding horizon — the same quantity the quoter charges for.
+                    # Off by default; the anchor is circular (see configs/default.py).
+                    res_scale = (abs(v_greek) * (self.cfg.HESTON["xi"] / 2.0) * np.sqrt(tau_hold)
+                                 if bt.get("use_reservation_price", False) else None)
+                    # Level error in IV points, and that error priced through this leg's
+                    # vega in dollars per share.
+                    vol_signal = true_atm_iv(v_now, T_remaining) - sigma_implied
+                    vol_edge   = v_greek * vol_signal
+                    trades = flow_sim.generate_trades(S_now, S_stale, bid, ask,
+                                                      1.0 / spd, opt["option_type"],
+                                                      option_edge=fair_now - fair,
+                                                      reservation_scale=res_scale,
+                                                      vol_signal=vol_signal,
+                                                      vol_edge=vol_edge,
+                                                      vol_threshold=vol_threshold)
 
                     for trade in trades:
-                        fill_size = min(trade["size"], size)
+                        # Counterparty buying lifts the MM's ask; selling hits its bid.
+                        fill_size = min(trade["size"],
+                                        ask_size if trade["side"] == "buy" else bid_size)
+                        if fill_size == 0:
+                            continue
+                        # signed_qty is the MM's position change: + when it buys.
+                        # spread_captured is the GROSS quoted spread, measured against the
+                        # quote-time (stale) fair. adverse_selection is what that stale mark
+                        # cost: the fair has already moved by (fair_now - fair) at fill time,
+                        # and a long MM gains from that move while a short MM loses. Their
+                        # SUM is the MM's true edge against the contemporaneous mark.
+                        # Previously only the gross term was booked, so on an informed fill
+                        # the trade recorded positive revenue while being instantly
+                        # underwater, and the offsetting loss had no component to land in.
                         if trade["side"] == "buy":
                             # Counterparty buys → MM sells at ask
                             inventory.fill_option(opt["K"], opt["T_days"], opt["option_type"],
                                                   "sell", fill_size, ask)
-                            day_spread_fills.append({
-                                "spread_captured": ask - fair,
-                                "size": fill_size,
-                                "contract_size": contract_size,
-                            })
+                            gross_spread, signed_qty = ask - fair, -fill_size
                         else:
                             # Counterparty sells → MM buys at bid
                             inventory.fill_option(opt["K"], opt["T_days"], opt["option_type"],
                                                   "buy", fill_size, bid)
-                            day_spread_fills.append({
-                                "spread_captured": fair - bid,
-                                "size": fill_size,
-                                "contract_size": contract_size,
-                            })
+                            gross_spread, signed_qty = fair - bid, fill_size
+                        # Adverse selection splits by POPULATION, because two
+                        # economically distinct groups are taking two different things:
+                        #   spot: the maker's stale view of S      (fair_now - fair)
+                        #   vol : its stale view of sigma          (fair_true - fair_now)
+                        # Their sum is the full gap between the quote-time mark and true
+                        # contemporaneous value. Booking only the spot leg -- as this did
+                        # before the vol-informed population existed -- left the vol gap
+                        # with no component to land in, and it went straight to residual.
+                        day_spread_fills.append({
+                            "spread_captured": gross_spread,
+                            "adverse_selection": (fair_now - fair) * signed_qty / fill_size,
+                            "adverse_selection_vol": (fair_true - fair_now) * signed_qty / fill_size,
+                            "size": fill_size,
+                            "contract_size": contract_size,
+                        })
 
                 # Update rolling log-return window after quoting/trading (no look-ahead)
                 log_ret = np.log(prices[idx + 1] / prices[idx])
@@ -159,13 +303,13 @@ class BacktestEngine:
                     T_o = max(0.0001, (o["T_days"] / TRADING_DAYS) - (day / TRADING_DAYS) - ((step + 1) / (TRADING_DAYS * spd)))
                     qty = inventory.get_option_position(o["K"], o["T_days"], o["option_type"])
                     all_pos_now.append({
-                        "S": S_true, "K": o["K"], "T": T_o,
-                        "r": r, "sigma": sigma_implied,
+                        "S": S_end, "K": o["K"], "T": T_o, "r": r,
+                        "sigma": vol_surface.quoted_iv(S_end, o["K"], T_o, sigma_implied),
                         "option_type": o["option_type"], "quantity": qty,
                     })
                 port_now = portfolio_greeks(all_pos_now, contract_size)
                 total_delta = port_now["delta"] + inventory.underlying_position
-                hedge_trades = hedger.check_and_hedge(total_delta, S_true, inventory)
+                hedge_trades = hedger.check_and_hedge(total_delta, S_end, inventory)
                 for ht in hedge_trades:
                     day_hedge_costs.append(ht["transaction_cost"])
 
@@ -174,16 +318,20 @@ class BacktestEngine:
                 step_realized_var = (log_ret ** 2) * TRADING_DAYS * spd  # annualized realized var this step
                 step_implied_var = sigma_implied ** 2
                 daily_theta_pnl += port_now["theta"] * step_dt
-                daily_gamma_pnl += 0.5 * port_now["gamma"] * S_true**2 * (step_realized_var - step_implied_var) * step_dt
+                daily_gamma_pnl += 0.5 * port_now["gamma"] * S_end**2 * (step_realized_var - step_implied_var) * step_dt
 
 
             # End of day
             S_eod = prices[(day + 1) * spd]
-            eod_book = self._book_value(options, inventory, S_eod, sigma_implied, r, day + 1, contract_size)
-            realized_pnl_delta = inventory.realized_pnl - realized_pnl_sod
+            eod_book = self._book_value(options, inventory, S_eod, sigma_implied, r, day + 1,
+                                        contract_size, vol_surface)
+            # Portfolio value = cash + option book mark + underlying mark. Daily P&L is
+            # the change in all three. The middle term must be a CASH FLOW, not an
+            # inception-to-date realized gain (see Inventory.cash).
+            cash_delta = inventory.cash - cash_sod
             underlying_eod = inventory.underlying_position * S_eod
             underlying_pnl = underlying_eod - underlying_sod
-            mtm_pnl = (eod_book - sod_book) + realized_pnl_delta + underlying_pnl
+            mtm_pnl = (eod_book - sod_book) + cash_delta + underlying_pnl
 
             # Vega P&L: use EOD portfolio greeks and net sigma change SOD→EOD
             # MTM book reflects only the net sigma change, not intraday oscillations
@@ -193,8 +341,8 @@ class BacktestEngine:
                 T_o = max(0.0001, (o["T_days"] / TRADING_DAYS) - ((day + 1) / TRADING_DAYS))
                 qty = inventory.get_option_position(o["K"], o["T_days"], o["option_type"])
                 eod_pos.append({
-                    "S": S_eod, "K": o["K"], "T": T_o,
-                    "r": r, "sigma": sigma_implied,
+                    "S": S_eod, "K": o["K"], "T": T_o, "r": r,
+                    "sigma": vol_surface.quoted_iv(S_eod, o["K"], T_o, sigma_implied),
                     "option_type": o["option_type"], "quantity": qty,
                 })
             port_eod = portfolio_greeks(eod_pos, contract_size)
@@ -204,20 +352,39 @@ class BacktestEngine:
             # Rolling-window sigma is too noisy intraday — step-by-step Δσ² sums to
             # estimator noise rather than economic vol changes. EOD net moves match
             # what the MTM book actually reflects.
+            # port_eod Greeks are evaluated at sigma_EOD — the ENDPOINT of the move. The
+            # Taylor expansion therefore runs backwards from the endpoint:
+            #   V(eod) - V(sod) ~= vega*dsigma - vanna*dS*dsigma - 0.5*volga*dsigma^2
+            # so every second-order term carries a minus sign. Using +0.5*volga here made
+            # the approximation worse on every move tested.
             delta_S = S_eod - S_sod
-            daily_vanna_pnl = port_eod["vanna"] * delta_S * delta_sigma
-            daily_volga_pnl = 0.5 * port_eod["volga"] * delta_sigma ** 2
+            daily_vanna_pnl = -port_eod["vanna"] * delta_S * delta_sigma
+            daily_volga_pnl = -0.5 * port_eod["volga"] * delta_sigma ** 2
 
             # Build attribution dict using intraday-accumulated Greek P&L components
             spread_capture = sum(
                 f["spread_captured"] * f["size"] * f["contract_size"]
                 for f in day_spread_fills
             )
+            # Adverse selection: the cost of quoting off a stale mark. spread_capture is
+            # the gross quoted spread; the two SUM to the MM's edge against the
+            # contemporaneous fair. Splitting them keeps both readable — gross spread is
+            # what the MM asked for, adverse selection is what the market took back.
+            adverse_selection = sum(
+                f["adverse_selection"] * f["size"] * f["contract_size"]
+                for f in day_spread_fills
+            )
+            adverse_selection_vol = sum(
+                f["adverse_selection_vol"] * f["size"] * f["contract_size"]
+                for f in day_spread_fills
+            )
             hedge_cost_total = -sum(day_hedge_costs)
-            residual = mtm_pnl - (spread_capture + daily_theta_pnl + daily_gamma_pnl + daily_vega_pnl + daily_vanna_pnl + daily_volga_pnl + hedge_cost_total)
+            residual = mtm_pnl - (spread_capture + adverse_selection + adverse_selection_vol + daily_theta_pnl + daily_gamma_pnl + daily_vega_pnl + daily_vanna_pnl + daily_volga_pnl + hedge_cost_total)
 
             attr = {
                 "spread_capture": spread_capture,
+                "adverse_selection": adverse_selection,
+                "adverse_selection_vol": adverse_selection_vol,
                 "theta_pnl":      daily_theta_pnl,
                 "gamma_pnl":      daily_gamma_pnl,
                 "vega_pnl":       daily_vega_pnl,

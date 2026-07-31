@@ -7,6 +7,11 @@ class Inventory:
         self.contract_size       = contract_size
         self.underlying_position = 0.0
         self.realized_pnl        = 0.0
+        # Cash ledger: every fill's actual cash flow. This is what a mark-to-market
+        # identity needs. realized_pnl is an inception-to-date gain and is kept for
+        # reporting only — substituting it for cash omits opening premium entirely
+        # and books a closing trade's prior-day gains a second time.
+        self.cash                = 0.0
         self._options: Dict[Tuple, Dict] = defaultdict(lambda: {"quantity": 0, "avg_cost": 0.0})
 
     def fill_option(self, strike: float, expiry: float, option_type: str,
@@ -17,6 +22,8 @@ class Inventory:
         old_qty   = pos["quantity"]
         old_cost  = pos["avg_cost"]
         new_qty   = old_qty + signed
+
+        self.cash += -signed * price * self.contract_size
 
         if new_qty == 0:
             # Position closes completely
@@ -39,6 +46,7 @@ class Inventory:
     def fill_underlying(self, side: str, size: float, price: float) -> None:
         signed = size if side == "buy" else -size
         self.realized_pnl       += -signed * price
+        self.cash               += -signed * price
         self.underlying_position += signed
 
     def get_option_position(self, strike: float, expiry: float, option_type: str) -> int:

@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 from src.backtest.engine import BacktestEngine
-from src.backtest.report import compute_sharpe
+from src.backtest.report import compute_pnl_signal_to_noise
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -62,8 +62,6 @@ def _make_cfg(hedge_threshold: float, base_spread: float, informed_threshold: fl
     )
     cfg.QUOTER = dict(
         base_spread=base_spread,
-        gamma_coeff=2.0,
-        vega_coeff=0.002,
         contract_size=100,
     )
     cfg.HEDGER = dict(
@@ -103,7 +101,7 @@ def _run_combo(hedge_threshold: float, base_spread_bps: float, informed_threshol
     """Run one parameter combo over multiple seeds; return averaged metrics."""
     base_spread = S0 * base_spread_bps / 10_000  # convert bps → dollars
 
-    sharpes        = []
+    snrs           = []
     total_pnls     = []
     hedge_costs    = []
     spread_captures = []
@@ -112,12 +110,12 @@ def _run_combo(hedge_threshold: float, base_spread_bps: float, informed_threshol
         cfg = _make_cfg(hedge_threshold, base_spread, informed_threshold)
         results = BacktestEngine(cfg, seed=seed).run()
 
-        sharpe = compute_sharpe(results["daily_pnl"])
+        snr = compute_pnl_signal_to_noise(results["daily_pnl"])
         total_pnl = results["total_pnl"]
         hedge_cost = sum(day["hedge_cost"] for day in results["daily_attribution"])
         spread_capture = sum(day["spread_capture"] for day in results["daily_attribution"])
 
-        sharpes.append(sharpe)
+        snrs.append(snr)
         total_pnls.append(total_pnl)
         hedge_costs.append(hedge_cost)
         spread_captures.append(spread_capture)
@@ -126,8 +124,8 @@ def _run_combo(hedge_threshold: float, base_spread_bps: float, informed_threshol
         "hedge_threshold":    hedge_threshold,
         "base_spread_bps":    base_spread_bps,
         "informed_threshold": informed_threshold,
-        "mean_sharpe":        float(np.mean(sharpes)),
-        "std_sharpe":         float(np.std(sharpes)),
+        "mean_pnl_snr":       float(np.mean(snrs)),
+        "std_pnl_snr":        float(np.std(snrs)),
         "mean_total_pnl":     float(np.mean(total_pnls)),
         "mean_hedge_cost":    float(np.mean(hedge_costs)),
         "mean_spread_capture": float(np.mean(spread_captures)),
@@ -151,7 +149,7 @@ def run_sensitivity(seeds=None, grid_override=None) -> pd.DataFrame:
 
     Returns
     -------
-    pd.DataFrame sorted by mean_sharpe descending.
+    pd.DataFrame sorted by mean_pnl_snr descending.
     """
     if seeds is None:
         seeds = DEFAULT_SEEDS
@@ -169,13 +167,13 @@ def run_sensitivity(seeds=None, grid_override=None) -> pd.DataFrame:
         "hedge_threshold",
         "base_spread_bps",
         "informed_threshold",
-        "mean_sharpe",
-        "std_sharpe",
+        "mean_pnl_snr",
+        "std_pnl_snr",
         "mean_total_pnl",
         "mean_hedge_cost",
         "mean_spread_capture",
     ])
-    df = df.sort_values("mean_sharpe", ascending=False).reset_index(drop=True)
+    df = df.sort_values("mean_pnl_snr", ascending=False).reset_index(drop=True)
 
     # Save
     os.makedirs("results", exist_ok=True)
@@ -185,18 +183,18 @@ def run_sensitivity(seeds=None, grid_override=None) -> pd.DataFrame:
 
     # Print ranked table
     print("\n" + "=" * 85)
-    print("SENSITIVITY ANALYSIS — RANKED BY MEAN SHARPE")
+    print("SENSITIVITY ANALYSIS — RANKED BY MEAN P&L SIGNAL/NOISE")
     print("=" * 85)
     header = (f"{'Rank':>4}  {'HgThr':>6}  {'SprBps':>7}  {'InfThr':>8}  "
-              f"{'Sharpe':>8}  {'StdShr':>7}  {'TotalPnL':>10}  "
+              f"{'PnLsnr':>8}  {'StdSnr':>7}  {'TotalPnL':>10}  "
               f"{'HedgeCost':>11}  {'SprdCap':>10}")
     print(header)
     print("-" * 85)
     for rank, row in enumerate(df.itertuples(), start=1):
         print(
             f"{rank:>4}  {row.hedge_threshold:>6.0f}  {row.base_spread_bps:>7.0f}  "
-            f"{row.informed_threshold:>8.4f}  {row.mean_sharpe:>8.3f}  "
-            f"{row.std_sharpe:>7.3f}  {row.mean_total_pnl:>10.2f}  "
+            f"{row.informed_threshold:>8.4f}  {row.mean_pnl_snr:>8.3f}  "
+            f"{row.std_pnl_snr:>7.3f}  {row.mean_total_pnl:>10.2f}  "
             f"{row.mean_hedge_cost:>11.2f}  {row.mean_spread_capture:>10.2f}"
         )
     print("=" * 85)
@@ -206,7 +204,7 @@ def run_sensitivity(seeds=None, grid_override=None) -> pd.DataFrame:
         f"\nBest combo: hedge_threshold={best.hedge_threshold:.0f}, "
         f"base_spread_bps={best.base_spread_bps:.0f}, "
         f"informed_threshold={best.informed_threshold:.4f}  "
-        f"→  mean_sharpe={best.mean_sharpe:.3f}"
+        f"→  mean_pnl_snr={best.mean_pnl_snr:.3f}"
     )
 
     return df
