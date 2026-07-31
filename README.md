@@ -14,7 +14,7 @@ A production-quality options market making simulator in Python. The system quote
 
 This project simulates how a market maker runs a book of equity options. The MM posts bid and ask prices on 6 options simultaneously, earns the spread when traders hit the quotes, and continuously delta-hedges to stay roughly flat on direction. After 30 trading days, the P&L is decomposed into its economic causes using a second-order Greek expansion plus an explicit adverse-selection term.
 
-The simulation is genuinely risky: a Heston stochastic-vol model drives the underlying, meaning implied vol clusters and spikes unpredictably. Informed traders exploit quote staleness whenever the MM's pricing lags the true price — this is the Glosten-Milgrom adverse selection mechanism. The MM can lose money.
+The simulation is genuinely risky: a Heston stochastic-vol model drives the underlying, meaning implied vol clusters and spikes unpredictably. Informed traders trade against the MM whenever their edge exceeds the half-spread, so the MM is adversely selected and can lose money. The spread carries a Glosten-Milgrom **break-even charge**, derived from the informed share and the expected informed move. The quoter itself is **not** a Glosten-Milgrom maker: it has no informed-arrival probability, no conditional expectation given order direction, and no Bayesian belief update — its mid is always the stale fair regardless of what just traded. It is a symmetric risk-loaded quoter. See `audit/FINDINGS.md` finding 13.
 
 ---
 
@@ -219,7 +219,9 @@ Daily P&L decomposes into five economic components:
 
 The second-order terms carry a **minus** sign because `port_eod` Greeks are evaluated at σ_EOD, the endpoint of the move, so the Taylor expansion runs backwards from it. Using `+½volga` made the approximation worse on every move tested — vol terms totalled $44,038 against an exact reprice of $2,966.70 (`docs/FINAL_NUMBERS.md` defect #8).
 
-The accounting identity `components + residual ≡ mtm_pnl` holds to machine precision. Adding vanna and volga reduces the residual from ~88% (first-order only) to ~22% — the remaining residual reflects third-order effects and discrete-hedging approximation error.
+The accounting identity `components + residual ≡ mtm_pnl` holds to machine precision. After the second-order vol terms and the adverse-selection term are included, the residual is **2.50% of gross flow** (median, seeds 0–19, ex day 0; per-seed range 0.05%–6.90%), verified closing on all 20 seeds in both configurations. The remaining residual reflects third-order effects and discrete-hedging approximation error.
+
+Residuals are quoted against **gross** flow, not net. The net denominator is unstable — seed 1 shows 2264% of net against 4.00% of gross — so any residual figure stated as a percentage of net is uninterpretable.
 
 **Why vega/vanna/volga use EOD net moves, not intraday accumulation:**
 
@@ -233,35 +235,60 @@ MTM P&L is `(EOD book value − SOD book value) + net cash flow from fills + und
 
 ## Performance Metrics
 
-Single run (seed=42, default params):
+**There is no P&L level to report, and that is the terminal finding of this project.**
 
-| Metric | Value |
-|--------|-------|
-| Total P&L | $33,837.79 |
-| Sharpe Ratio (annualized) | 1.849 |
-| Win Rate | 46.7% of days |
-| Max Drawdown | $35,111.78 |
+With no competition model, the simulator's P&L level is not identified. Neither configuration
+yields a claimable performance number:
 
-### Multi-Seed Analysis (20 seeds, default params)
+| configuration | median P&L | median Sharpe\* | why it is not claimable |
+|---|---:|---:|---|
+| `use_reservation_price=False` (repo default) | +$290,930 | +9.752 | Unbounded in quote width. Noise flow is perfectly inelastic, so P&L rises monotonically with width — the level is a function of a width *we chose*, not of anything the model determines. |
+| `use_reservation_price=True` (ITEM 13) | −$1,132,830 | −42.342 | Artifact of the mis-anchored reservation scale: p_fill ≈ 1.33% at the derived spread, screening out 99% of benign flow, because the scale is anchored to the MM's own inventory horizon τ (circular — λ sets τ sets the scale). |
+
+The default is `False` because a repo default must not be a configuration already identified as
+an artifact — **not** because it is more trustworthy. Unbounded is a different defect from
+wrong, not a smaller one. Do not quote either P&L figure, either Sharpe\*, or the positive-seed
+counts (19/20 and 0/20) as a performance result.
+
+### \* Every Sharpe figure in this project carries this caveat
+
+**There is no capital base anywhere in this repo.** `compute_sharpe`
+(`src/backtest/report.py:8-13`) computes `sqrt(252) × mean(daily DOLLAR P&L) /
+population-std(daily DOLLAR P&L)` — a **signal-to-noise ratio of a dollar P&L stream**, not a
+risk-adjusted return. It is invariant to leverage and book size: double every position and it
+does not move. It also subtracts a daily rate from a dollar series (dimensionally incoherent,
+worth 1.3e-07) and uses `ddof=0`. A percentage drawdown is undefinable here for the same reason.
+`grep -rniE "capital|equity|nav|aum|account_value|initial_cash|book_size"` returns zero hits in
+`src/`, `configs/` or `bench/`.
+
+### What IS claimable
+
+| claim | value | measured on |
+|---|---|---|
+| The attribution identity closes | residual median **2.50%** of gross flow; per-seed range 0.05%–6.90% | seeds 0–19, ex day 0, closing on **all 20 seeds** in both configurations |
+| The backtest is bit-reproducible | byte-identical daily P&L, attribution and price path across separate processes | seed 42, re-verified after every commit |
+| Derived adverse-selection share matches the measured one, independently | derived **0.8868** from Heston dynamics + arrival model; measured **~89%** from fill counts | two independent routes, no shared inputs |
+| Fill probability was completely independent of quote width | **5,335 fills / 19,388 contracts at every width** across a 16× sweep | seed 42 |
+| The half-spread derivation carries no fitted coefficient | 1.13%–3.17% of premium across the six legs | analytic, at σ=0.20 |
+
+### Multi-Seed Dispersion (20 seeds, default params)
 
 ```bash
 python3 src/backtest/multi_seed.py   # saves results/multi_seed.csv
 ```
 
-Running the same default configuration across seeds 0–19 reveals high outcome variance driven by Heston vol-of-vol clustering over a short 30-day window:
+Reported as **dispersion only** — the levels inherit the identification problem above.
 
 | Metric | Value |
 |--------|-------|
-| Median Sharpe | 1.223 |
-| Mean Sharpe | −0.144 |
-| Std Sharpe | 3.072 |
-| Min Sharpe | −5.146 (seed 4) |
-| Max Sharpe | 4.506 (seed 15) |
-| Median Win Rate | 50.0% |
-| Median Max Drawdown | $45,797 |
-| Median Total P&L | $23,414 |
+| Mean Sharpe\* | −0.144 |
+| Std Sharpe\* | 3.072 |
 
-The mean Sharpe (−0.14) is dragged negative by a few catastrophic seeds where a single vol spike triggers large adverse-selection losses before the hedger can respond. The median (1.22) is more representative of the typical run. The seed=42 result (Sharpe 1.849) sits near the 75th percentile. The 30-day window is short enough that path-dependent vol clustering dominates parameter skill.
+Any single-seed comparison is noise: with a 20-seed mean of −0.14 against a std of 3.07, a ±1
+move on one seed carries no information. The 30-day window is short enough that path-dependent
+vol clustering dominates parameter skill.
+
+Full breakdown of what can and cannot be claimed: [`docs/FINAL_NUMBERS.md`](docs/FINAL_NUMBERS.md).
 
 ---
 
