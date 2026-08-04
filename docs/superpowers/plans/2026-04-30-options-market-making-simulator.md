@@ -2197,7 +2197,7 @@ P&L Attribution:
 
 ---
 
-## Defensible Resume Bullets
+## Defensible Summary Claims
 
 > Built a production-quality options market making simulator in Python: implemented Black-Scholes, binomial tree, and Monte Carlo (antithetic variates) pricers validated against put-call parity and inter-model convergence tests.
 
