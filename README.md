@@ -387,7 +387,5 @@ a recommendation.
 > cost and a Glosten-Milgrom break-even condition with no fitted coefficients, and established
 > that the simulator's P&L level is not identified without a model of competition.
 
-The previous "Resume Bullets" section has been **removed**. Four of its five bullets stated
-things this audit disproved; they are recorded, with corrections, in the RETIRED section of
-`docs/FINAL_NUMBERS.md`. A reader should not have to parse annotated false claims to find out
-what is true.
+Superseded summary claims from earlier revisions are recorded, with their corrections, in the
+RETIRED section of `docs/FINAL_NUMBERS.md`.

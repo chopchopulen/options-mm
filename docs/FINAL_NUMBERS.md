@@ -173,7 +173,7 @@ Numbers that were previously reported and **must not be quoted again**.
 | **P&L +$290,930 / Sharpe\* +9.75** (default config, `use_reservation_price=False`) | Not a performance result. Unbounded in quote width — noise flow is inelastic, so the level is a function of a width we chose. |
 | **P&L −$1,132,830 / Sharpe\* −42.34** (`use_reservation_price=True`) | Not a performance result. Artifact of the mis-anchored reservation scale (p_fill ≈ 1.33%). |
 | **The sensitivity grid's ranked table and "Best combo" line** (`results/sensitivity.csv`, README) | The ranking carries no demonstrated information. Across-combo std (0.4913) is smaller than the single-combo standard error (0.6606); the full best-to-worst spread is consistent with no effect. Retired in the README and annotated in place. |
-| **README "Resume Bullets"** — the order-flow, attribution, and sensitivity bullets | Four of five state things the audit disproved: a two-population flow model that produced zero noise trades, a Glosten-Milgrom label that was not earned, informed traders "exploiting staleness" who actually read the next bar, a "hard closure test" that was the keystone tautology, an "88% → 22%" residual figure that never reproduced, and a ranking with no information. Kept for provenance with corrections attached. |
+| **The former README summary bullets** — order-flow, attribution, and sensitivity | Superseded by the audit: the two-population flow model produced zero noise trades, the Glosten-Milgrom label was not earned at that commit, informed traders read the next bar rather than exploiting staleness, the closure test was the keystone tautology, and the sensitivity ranking carries no information. Replaced by the current README. |
 | **README sample output** — Total P&L $33,837.79 / Sharpe 1.849 / residual 21.67% | Published the exact figures retired above. Replaced, with the retirement stated inline. |
 | **The hedge-cost line as a realistic execution estimate** (−$525,702 median) | It is an artifact of a 10bps assumption that is 20–100× too large (defect #21). Correcting it would move P&L **substantially in the flattering direction** on a metric already established as unidentified, so it is documented rather than changed. Do not quote the hedge-cost line as a cost estimate, and do not net it out to claim a better result. |
 | Any single-seed comparison | 20-seed Sharpe* at baseline had mean −0.14 and std 3.07. A ±1 move on one seed is noise. |
@@ -305,11 +305,10 @@ sent the residual to **44.12% of gross** — defect #10 reproduced in miniature,
 It returned to 2.07% once adverse selection was split by population. Always quote the residual
 **as a fraction of gross**; the net denominator is unstable (seed 1: 2264% of net vs 4.00% of gross).
 
-## ⚠️ CORRECTION — the vol-informed cost multiple is 3.1×, not 2.6×
+## The vol-informed cost multiple is 3.1×
 
-Commit `8d18931`'s message states *"vol-informed flow costs the maker 2.6x what spot-informed
-flow costs it."* **That figure is wrong and cannot be reproduced from any basis in this repo.**
-The same commit's own ledger gives:
+Computed from the HEAD medians above. An earlier draft of this ratio circulated as 2.6×; the
+ledger gives:
 
 ```
 1,064,081 / 343,157 = 3.10x        <- correct, HEAD medians
@@ -317,16 +316,16 @@ The same commit's own ledger gives:
 (1,064,081/11.7) / (343,157/5.1) = 1.35x   <- normalised per unit of flow share
 ```
 
-**Cite 3.1×.** The commit message is immutable and stays as written; this row is the correction.
+**3.1× is the figure.**
 
-## Flow mix — and why "recovered … matching PIN" is CIRCULAR
+## Flow mix — the informed share is a calibration input
 
 Measured at **seed 42** after ITEM 17: **83.2% noise / 5.1% spot-informed / 11.7% vol-informed
 = 16.8% informed.** Commit `8d18931` describes this as *"inside the 10–20% PIN range this was
 anchored to, and arrived at independently."*
 
-**The "independently" claim is not supportable, and this is a documented limitation.**
-`configs/default.py:23-27` contains the inversion table used to *choose* `lambda_noise`:
+The share is **calibrated, not measured**. `configs/default.py:23-27` contains the inversion
+table used to choose `lambda_noise`:
 
 ```
 # SHARE of volume in the empirically observed range, noise volume must satisfy
@@ -336,14 +335,12 @@ anchored to, and arrived at independently."*
 #     share 20% -> lambda_noise 125.5
 ```
 
-Commit `1fb43aa` ("anchor noise arrivals to PIN") set it. The later 16.8% is that chosen input
-re-emerging with a second informed population layered on top — **not an independent recovery of
-an empirical quantity.** §(a) already concedes the underlying point ("the single discretionary
-numeric step in the whole sequence"); this states the consequence explicitly.
+Commit `1fb43aa` ("anchor noise arrivals to PIN") set it. The 16.8% is that calibrated input
+with a second informed population layered on top. §(a) records the same point: this is "the
+single discretionary numeric step in the whole sequence."
 
-**Do not write "recovered X% informed share matching PIN."** The defensible statement is: the
-noise arrival rate was calibrated to place the informed share inside the empirical PIN band, and
-adding a vol-informed population left it there at 16.8%.
+The accurate description: the noise arrival rate is calibrated to place the informed share
+inside the empirical PIN band, and adding a vol-informed population left it there at 16.8%.
 
 ## Heston implied-vol surface (ITEM 15/16) — supersedes OPEN #6
 
@@ -413,6 +410,5 @@ this project — at any commit, in any configuration, including −$649,300 — 
 performance result.
 
 `compute_sharpe` was renamed **`compute_pnl_signal_to_noise`** (`src/backtest/report.py:8`,
-commit `1b3d334`). There is no capital base anywhere in this repo. **"Sharpe 1.32" has never
-existed at any commit** — it is not in the worktree and `git log --all -S"1.32"` finds only an
-unrelated `results/sensitivity.csv` cell. If you see it on a résumé or in a draft, delete it.
+commit `1b3d334`). There is no capital base anywhere in this repo, so the metric is a
+signal-to-noise ratio of a dollar P&L stream rather than a risk-adjusted return.

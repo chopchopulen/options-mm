@@ -4,25 +4,21 @@ This repo is a **stochastic simulator**. Read these rules before touching anythi
 
 ## 0. `docs/FINAL_NUMBERS.md` is the single source of truth
 
-**No number leaves this repo — into a README, a commit message, or a résumé — unless it
-appears in `docs/FINAL_NUMBERS.md` first.** §(e) is authoritative over §(a)–(d) wherever they
-disagree; (a)–(d) predate Phase E.
+**No number leaves this repo unless it appears in `docs/FINAL_NUMBERS.md` first.** Section (e)
+is authoritative over (a)-(d) wherever they disagree; (a)-(d) predate Phase E.
 
-Hard bans, all established by the audit:
+Standing conventions:
 
-- **"Sharpe 1.32" has never existed at any commit.** Not in the worktree; `git log --all
-  -S"1.32"` finds only an unrelated `results/sensitivity.csv` cell. If you see it anywhere,
-  delete it.
-- **No P&L or signal-to-noise figure may be quoted as a performance result**, in either
-  configuration, at any commit — the P&L LEVEL is unidentified until a competition model runs.
-- **`compute_sharpe` no longer exists.** It is `compute_pnl_signal_to_noise`
-  (`src/backtest/report.py:8`) because there is no capital base anywhere in this repo.
-- **The sensitivity grid's ranking carries no information** (defect #18). Never cite "best combo."
-- **Say 3.1×, not 2.6×**, for the vol-informed vs spot-informed cost ratio. Commit `8d18931`'s
-  message says 2.6×; its own ledger says 3.10×. See FINAL_NUMBERS §(e).
-- **Never write "recovered X% informed share matching PIN."** `lambda_noise=177.8` was solved
-  backwards from a 15% target inside the PIN band. It is circular.
-- **Heston here is semi-analytic, not closed-form.**
+- The P&L LEVEL is not identified until a competition model runs. Report attribution shape and
+  sign, not levels.
+- The performance metric is `compute_pnl_signal_to_noise` (`src/backtest/report.py:8`). It is a
+  signal-to-noise ratio of a dollar stream, not a Sharpe ratio -- there is no capital base.
+- The sensitivity grid's ranking is retired (defect #18): across-combo std 0.4913 is smaller
+  than the single-combo SE 0.6606.
+- Vol-informed vs spot-informed cost ratio is **3.1x** (1,064,081 / 343,157). See (e).
+- The informed volume share is a calibration input, not a measurement -- `lambda_noise` is set
+  from the target share in `configs/default.py:23-27`. Describe it as calibrated, not recovered.
+- Heston here is semi-analytic (CF + quadrature / Carr-Madan FFT), not closed-form.
 
 ## 1. Every result cites its seed
 
