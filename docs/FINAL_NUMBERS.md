@@ -2,7 +2,25 @@
 
 **Read this file before quoting any number from this project.**
 
-Repo: `/Users/harry/Desktop/options-mm`. Branch `audit/blind-audit-2026-07-26`.
+> ## ⚠️ PHASE E SUPERSEDES PARTS OF THIS FILE
+>
+> Sections (a)–(d) below were written at commit `985b294`, **before** the Phase E sequence
+> (`9772ded` → `60a1db4` → `f137383` → `8d18931` → `95c74b8`). Where Phase E changed a number,
+> **§(e) at the bottom of this file is authoritative and this one is not.** Specifically:
+>
+> | Stale here | Current |
+> |---|---|
+> | Attribution has 8 components + residual | **9 components** — `adverse_selection_vol` added |
+> | residual 2.50% of gross | **2.07% of gross** |
+> | median P&L +$290,930 (default config) | **−$649,300** (seeds 0–19, ex day 0, post-ITEM 17) |
+> | OPEN #6 "flat implied-vol surface" | **False** — a Heston IV surface with skew and term structure exists (`src/pricing/vol_surface.py`) |
+> | OPEN #3 "no competition model … unimplemented" | **Built and tested, gated OFF**; raises without real SPY data (`src/market/competition.py`) |
+>
+> Everything else in (a)–(d) — the defect log, the retirements, the pricing/Greeks audit, the
+> capital-base caveat — stands unchanged.
+
+Repo: `/Users/harry/Desktop/options-mm`. Branch `main` (merged from
+`audit/blind-audit-2026-07-26` at `78168bd`).
 Audit trail: `audit/FINDINGS.md`, `audit/RECONCILIATION.md`, `audit/ITEM8_FILL_MODEL.md`.
 Frozen pre-audit baseline: `bench/BASELINE.md`.
 
@@ -255,3 +273,146 @@ end: with noise flow inelastic the level is unbounded in a quote width we choose
 mechanism that bounds it rests on a behavioural scale anchored to the wrong quantity. **Fixing
 that requires a competition model. Until there is one, no P&L figure from this project should be
 quoted as a result — in either configuration.**
+
+---
+
+# (e) PHASE E — ITEM 15–18 (authoritative over §(a)–(d) where they disagree)
+
+Commits: `9772ded` (SPY chain loader) → `60a1db4` (Heston IV surface) → `f137383` (quote every
+leg off the surface) → `8d18931` (vol-informed traders, split adverse selection) → `95c74b8`
+(competition module, data pending). Written 2026-08-04 to close the gap between §(a)–(d) and HEAD.
+
+## Attribution at HEAD — 9 components
+
+`src/backtest/engine.py:385-392` plus the hedge-cost accumulator at `:314`. Medians, seeds 0–19,
+ex day 0, ITEM 16 → ITEM 17:
+
+| component | ITEM 16 | ITEM 17 (HEAD) |
+|---|---:|---:|
+| `spread_capture` | +$1,184,181 | +$1,262,628 |
+| `adverse_selection` (spot gap, `fair_now − fair`) | −$375,786 | −$343,157 |
+| `adverse_selection_vol` (vol gap, `fair_true − fair_now`) | — | **−$1,064,081** |
+| `vega_pnl` | +$13,747 | +$80,475 |
+| `hedge_cost` | −$527,595 | −$530,570 |
+| `residual` | −$1,968 | −$70,704 |
+| **total P&L** | **+$315,669** | **−$649,300** |
+| **residual / gross** | 2.52% | **2.07%** |
+
+`theta_pnl`, `gamma_pnl`, `vanna_pnl`, `volga_pnl` complete the nine; all are small (|·| < $2k).
+
+**The residual as an instrument.** Adding a P&L source with no matching attribution component
+sent the residual to **44.12% of gross** — defect #10 reproduced in miniature, caught on contact.
+It returned to 2.07% once adverse selection was split by population. Always quote the residual
+**as a fraction of gross**; the net denominator is unstable (seed 1: 2264% of net vs 4.00% of gross).
+
+## ⚠️ CORRECTION — the vol-informed cost multiple is 3.1×, not 2.6×
+
+Commit `8d18931`'s message states *"vol-informed flow costs the maker 2.6x what spot-informed
+flow costs it."* **That figure is wrong and cannot be reproduced from any basis in this repo.**
+The same commit's own ledger gives:
+
+```
+1,064,081 / 343,157 = 3.10x        <- correct, HEAD medians
+1,064,081 / 375,786 = 2.83x        <- against the ITEM 16 spot figure
+(1,064,081/11.7) / (343,157/5.1) = 1.35x   <- normalised per unit of flow share
+```
+
+**Cite 3.1×.** The commit message is immutable and stays as written; this row is the correction.
+
+## Flow mix — and why "recovered … matching PIN" is CIRCULAR
+
+Measured at **seed 42** after ITEM 17: **83.2% noise / 5.1% spot-informed / 11.7% vol-informed
+= 16.8% informed.** Commit `8d18931` describes this as *"inside the 10–20% PIN range this was
+anchored to, and arrived at independently."*
+
+**The "independently" claim is not supportable, and this is a documented limitation.**
+`configs/default.py:23-27` contains the inversion table used to *choose* `lambda_noise`:
+
+```
+# SHARE of volume in the empirically observed range, noise volume must satisfy
+# noise = informed * (1 - share) / share:
+#     share 10% -> lambda_noise 282.4
+#     share 15% -> lambda_noise 177.8      <- lambda_noise=177.8 is the shipped value
+#     share 20% -> lambda_noise 125.5
+```
+
+Commit `1fb43aa` ("anchor noise arrivals to PIN") set it. The later 16.8% is that chosen input
+re-emerging with a second informed population layered on top — **not an independent recovery of
+an empirical quantity.** §(a) already concedes the underlying point ("the single discretionary
+numeric step in the whole sequence"); this states the consequence explicitly.
+
+**Do not write "recovered X% informed share matching PIN."** The defensible statement is: the
+noise arrival rate was calibrated to place the informed share inside the empirical PIN band, and
+adding a vol-informed population left it there at 16.8%.
+
+## Heston implied-vol surface (ITEM 15/16) — supersedes OPEN #6
+
+OPEN #6 ("flat implied-vol surface") is **no longer true**. `src/pricing/vol_surface.py`
+separates level from shape:
+
+```
+quoted_iv(K,T) = atm_level_estimate(T) + [surface_iv(K,T) − surface_atm_iv(T)]
+```
+
+- **Shape** derived from the Heston characteristic function at the model's own parameters
+  (ρ=−0.7 → negative skew, ξ=0.3 → smile curvature, κ/θ → term structure). **No fitted constants.**
+- **Level** remains the maker's own 10-sample rolling realized-vol estimate, so the staleness and
+  adverse-selection story is preserved.
+- Precomputed onto a (log-moneyness × maturity) grid and interpolated with `RectBivariateSpline`
+  (~14,000 CF inversions per backtest avoided).
+
+**It is semi-analytic, not closed-form.** Two routes, `src/pricing/characteristic_function.py`:
+little-trap formulation (Albrecher et al. 2007) for the branch cut; direct Gauss-Kronrod
+quadrature truncated at **u=500** (`limit=500`, `epsabs=1e-9`); and Carr–Madan FFT on a strike
+grid. Agreement: **max abs 0.00000, max relative 3.3e-05** across 30d/60d/1y; deep-OTM to 1e-6.
+
+**OPEN — not measured:** the grid interpolation error. The docstring asserts "exact to the grid
+resolution"; no number exists. **There is no calibration** — the surface is self-consistent with
+the simulator's own Heston parameters, not fitted to market data.
+
+## Vol-informed counterparty population (ITEM 17)
+
+A second informed population trading the surface against the maker's lagging vol estimate. Both
+inputs derived, not fitted:
+
+- **True ATM IV** — under Heston, `E[v̄] = θ + (v_t−θ)(1−e^{−κT})/(κT)`; ATM implied vol is its
+  square root. Reduces to `√θ` when `v_t = θ` and to `√v_t` as `T → 0`; both limits verified numerically.
+- **Arrival threshold** — the standard error of the maker's own estimator,
+  `σ/√(2·window) = 0.045` at σ=0.20, window=10. A signal below that is indistinguishable from
+  sampling noise, so a rational informed trader would not act on it.
+
+Uses contemporaneous `v_now`, gated on `edge > half_spread`, same information discipline as the
+spot population. **Known gap, recorded not patched:** the quoter's Glosten–Milgrom charge
+compensates for *spot*-informed arrival only, so vol-informed flow is currently traded against
+for free. Fixing it moves P&L substantially upward on a metric still unidentified in quote width.
+
+## Competition module (ITEM 18) — supersedes OPEN #3
+
+OPEN #3 said "unimplemented." It is now **built, tested, and deliberately gated OFF.**
+
+`src/market/competition.py` samples the competing half-spread from the **empirical distribution
+of real SPY quotes**, bucketed by moneyness and maturity — no dispersion parameter, because the
+dispersion *is* the observed distribution. It gates all flow, informed and noise alike.
+
+**It has never run.** `data/` is empty. `CompetitiveQuotes.from_cache()` raises
+`MarketDataUnavailable` rather than substituting an invented distribution — verified. The eight
+tests use a synthetic surface as a **fixture, explicitly not a calibration.**
+
+> **Nothing in this project has been validated against real market data.**
+
+**Remaining work:** run `python3 -m src.backtest.data` between 09:30–16:00 ET on a weekday,
+commit `data/spy_surface.csv`, set `use_competition=True`, re-run the `base_spread` sweep and test
+for an interior optimum. If one exists, comparing the optimal half-spread against the ITEM 10
+derived Glosten–Milgrom charge is the real result — two independent routes to the same number.
+
+## What Phase E did NOT change
+
+The terminal finding stands: **the P&L level is still unidentified.** Competition is the
+mechanism that would identify it and it has not been run. No P&L or signal-to-noise figure from
+this project — at any commit, in any configuration, including −$649,300 — may be quoted as a
+performance result.
+
+`compute_sharpe` was renamed **`compute_pnl_signal_to_noise`** (`src/backtest/report.py:8`,
+commit `1b3d334`). There is no capital base anywhere in this repo. **"Sharpe 1.32" has never
+existed at any commit** — it is not in the worktree and `git log --all -S"1.32"` finds only an
+unrelated `results/sensitivity.csv` cell. If you see it on a résumé or in a draft, delete it.
